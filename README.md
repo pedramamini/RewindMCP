@@ -1,24 +1,24 @@
 # RewindDB
 
-a python library for interfacing with the rewind.ai sqlite database.
+A Python library for interfacing with the Rewind.ai SQLite database.
 
-## project overview
+## Project Overview
 
-rewinddb is a python library that provides a convenient interface to the rewind.ai sqlite database. rewind.ai is a personal memory assistant that captures audio transcripts and screen ocr data in real-time. this project allows you to programmatically access and search through this data, making it possible to retrieve past conversations, find specific information mentioned in meetings, or analyze screen content from previous work sessions.
+RewindDB is a Python library that provides a convenient interface to the Rewind.ai SQLite database. Rewind.ai is a personal memory assistant that captures audio transcripts and screen OCR data in real-time. This project allows you to programmatically access and search through this data, making it possible to retrieve past conversations, find specific information mentioned in meetings, or analyze screen content from previous work sessions.
 
-the project consists of three main components:
-1. a core python library (`rewinddb`) for direct database access
-2. command-line tools for transcript retrieval and keyword searching
-3. an mcp server that exposes these capabilities to genai models
+The project consists of three main components:
+1. A core Python library (`rewinddb`) for direct database access
+2. Command-line tools for transcript retrieval and keyword searching
+3. An MCP server that exposes these capabilities to GenAI models
 
-## installation
+## Installation
 
-### prerequisites
+### Prerequisites
 
-- python 3.6+
-- fastapi and uvicorn (for mcp server)
+- Python 3.6+
+- FastAPI and Uvicorn (for MCP server)
 
-### install from source
+### Install from Source
 
 ```bash
 # clone the repository
@@ -29,7 +29,7 @@ cd RewindMCP
 pip install .
 ```
 
-### manual installation
+### Manual Installation
 
 ```bash
 # install required dependencies
@@ -39,30 +39,30 @@ pip install fastapi uvicorn
 pip install -e .
 ```
 
-## configuration
+## Configuration
 
-rewinddb uses a `.env` file to store database connection parameters. this approach avoids hardcoding sensitive information like database paths and passwords in the source code.
+RewindDB uses a `.env` file to store database connection parameters. This approach avoids hardcoding sensitive information like database paths and passwords in the source code.
 
-### setting up the .env file
+### Setting Up the .env File
 
-1. create a `.env` file in your project directory or in your home directory as `~/.rewinddb.env`
-2. add the following configuration parameters:
+1. Create a `.env` file in your project directory or in your home directory as `~/.rewinddb.env`
+2. Add the following configuration parameters:
 
 ```
 DB_PATH=/path/to/your/rewind/database.sqlite3
 DB_PASSWORD=your_database_password
 ```
 
-for example:
+For example:
 
 ```
 DB_PATH=/Users/username/Library/Application Support/com.memoryvault.MemoryVault/db-enc.sqlite3
 DB_PASSWORD=your_database_password_here
 ```
 
-### custom .env file location
+### Custom .env File Location
 
-you can also specify a custom location for your `.env` file when using the library or cli tools:
+You can also specify a custom location for your `.env` file when using the library or CLI tools:
 
 ```python
 # in python code
@@ -80,9 +80,9 @@ python search_cli.py --keyword "meeting" --env-file /path/to/custom/.env
 python mcp_server.py --env-file /path/to/custom/.env
 ```
 
-## library usage
+## Library Usage
 
-### basic usage
+### Basic Usage
 
 ```python
 import rewinddb
@@ -110,7 +110,7 @@ with rewinddb.RewindDB() as db:
     transcripts = db.get_audio_transcripts_relative(hours=1)
 ```
 
-### retrieving audio transcripts
+### Retrieving Audio Transcripts
 
 ```python
 # get transcripts from a relative time period
@@ -123,7 +123,7 @@ end_time = datetime(2023, 5, 11, 17, 0, 0)    # 5:00 PM
 transcripts = db.get_audio_transcripts_absolute(start_time, end_time)
 ```
 
-### retrieving screen ocr data
+### Retrieving Screen OCR Data
 
 ```python
 # get screen ocr from a relative time period
@@ -133,7 +133,7 @@ ocr_data = db.get_screen_ocr_relative(days=1)
 ocr_data = db.get_screen_ocr_absolute(start_time, end_time)
 ```
 
-### searching across data
+### Searching Across Data
 
 ```python
 # search for keywords in the last 7 days (default)
@@ -150,11 +150,11 @@ for screen_hit in results['screen']:
     print(f"Screen match at {screen_hit['frame_time']} in {screen_hit['application']}: {screen_hit['text']}")
 ```
 
-## cli tools
+## CLI Tools
 
 ### transcript_cli.py
 
-retrieve audio transcripts from the rewind.ai database.
+Retrieve audio transcripts from the Rewind.ai database.
 
 ```bash
 # get transcripts from the last hour
@@ -175,7 +175,7 @@ python transcript_cli.py --relative "1 hour" --env-file /path/to/custom/.env
 
 ### search_cli.py
 
-search for keywords across both audio transcripts and screen ocr data.
+Search for keywords across both audio transcripts and screen OCR data.
 
 ```bash
 # search for a keyword with default time range (7 days)
@@ -194,11 +194,11 @@ python search_cli.py --keyword "python" --context 5 --debug
 python search_cli.py --keyword "meeting" --env-file /path/to/custom/.env
 ```
 
-## mcp server
+## MCP Server
 
-the model context protocol (mcp) server exposes rewinddb functionality to genai models through a rest api.
+The Model Context Protocol (MCP) server exposes RewindDB functionality to GenAI models through a REST API.
 
-### starting the server
+### Starting the Server
 
 ```bash
 # start the server on default port (8000)
@@ -214,21 +214,21 @@ python mcp_server.py --debug
 python mcp_server.py --env-file /path/to/custom/.env
 ```
 
-### available tools
+### Available Tools
 
-the mcp server provides the following tools:
+The MCP server provides the following tools:
 
-1. `get_transcripts_relative`: retrieve audio transcripts from a relative time period
-2. `get_transcripts_absolute`: retrieve audio transcripts from a specific time range
-3. `search`: search for keywords across both audio and screen data
+1. `get_transcripts_relative`: Retrieve audio transcripts from a relative time period
+2. `get_transcripts_absolute`: Retrieve audio transcripts from a specific time range
+3. `search`: Search for keywords across both audio and screen data
 
-### api documentation
+### API Documentation
 
-when the server is running, you can access the auto-generated api documentation at:
-- swagger ui: `http://localhost:8000/docs`
-- redoc: `http://localhost:8000/redoc`
+When the server is running, you can access the auto-generated API documentation at:
+- Swagger UI: `http://localhost:8000/docs`
+- ReDoc: `http://localhost:8000/redoc`
 
-### example usage with curl
+### Example Usage with cURL
 
 ```bash
 # get transcripts from the last hour
@@ -242,46 +242,46 @@ curl -X POST "http://localhost:8000/mcp/tools/search" \
   -d '{"keyword": "meeting", "relative": "1day"}'
 ```
 
-## database schema
+## Database Schema
 
-the rewind.ai database contains several key tables:
+The Rewind.ai database contains several key tables:
 
-- `audio`: stores audio recording segments with timestamps
-- `transcript_word`: contains individual transcribed words linked to audio segments
-- `frame`: stores screen capture frames with timestamps
-- `node`: contains text elements extracted from screen captures (ocr)
-- `segment`: tracks application and window usage sessions
-- `event`: stores calendar events and meetings
+- `audio`: Stores audio recording segments with timestamps
+- `transcript_word`: Contains individual transcribed words linked to audio segments
+- `frame`: Stores screen capture frames with timestamps
+- `node`: Contains text elements extracted from screen captures (OCR)
+- `segment`: Tracks application and window usage sessions
+- `event`: Stores calendar events and meetings
 
-### data types explained
+### Data Types Explained
 
-#### audio recordings
-audio recordings are captured by rewind.ai when you speak or when there's audio playing on your computer. each recording is stored as a segment in the `audio` table with metadata like start time and duration. these recordings are then processed to extract transcribed words.
+#### Audio Recordings
+Audio recordings are captured by Rewind.ai when you speak or when there's audio playing on your computer. Each recording is stored as a segment in the `audio` table with metadata like start time and duration. These recordings are then processed to extract transcribed words.
 
-#### transcript words
-individual words extracted from audio recordings through speech recognition. each word in the `transcript_word` table includes information about when it occurred within the audio recording (timeOffset), its position in the full text (fullTextOffset), and its duration. transcript words are linked to their source audio recording.
+#### Transcript Words
+Individual words extracted from audio recordings through speech recognition. Each word in the `transcript_word` table includes information about when it occurred within the audio recording (timeOffset), its position in the full text (fullTextOffset), and its duration. Transcript words are linked to their source audio recording.
 
-#### frames
-screenshots captured by rewind.ai at regular intervals as you use your computer. each frame in the `frame` table includes a timestamp (createdAt) and is linked to the application segment it belongs to. frames are the visual equivalent of audio recordings, capturing what was on your screen at specific moments.
+#### Frames
+Screenshots captured by Rewind.ai at regular intervals as you use your computer. Each frame in the `frame` table includes a timestamp (createdAt) and is linked to the application segment it belongs to. Frames are the visual equivalent of audio recordings, capturing what was on your screen at specific moments.
 
-#### nodes
-text elements extracted from screen captures using optical character recognition (ocr). each node in the `node` table represents a piece of text visible on your screen, including its position (leftX, topY, width, height) and other metadata. nodes are linked to the frame they were extracted from. they are the visual equivalent of transcript words.
+#### Nodes
+Text elements extracted from screen captures using Optical Character Recognition (OCR). Each node in the `node` table represents a piece of text visible on your screen, including its position (leftX, topY, width, height) and other metadata. Nodes are linked to the frame they were extracted from. They are the visual equivalent of transcript words.
 
-#### segments
-application usage sessions that track when you were using specific applications and windows. each segment in the `segment` table includes the application bundle id, window name, start time, and end time. segments help organize frames and audio recordings by the application context they occurred in.
+#### Segments
+Application usage sessions that track when you were using specific applications and windows. Each segment in the `segment` table includes the application bundle ID, window name, start time, and end time. Segments help organize frames and audio recordings by the application context they occurred in.
 
-#### events
-calendar events and meetings that were scheduled during your computer usage. the `event` table stores information about these events, including title, start time, end time, and other metadata. events provide additional context about what you were doing during specific time periods.
+#### Events
+Calendar events and meetings that were scheduled during your computer usage. The `event` table stores information about these events, including title, start time, end time, and other metadata. Events provide additional context about what you were doing during specific time periods.
 
-key relationships:
-- audio segments are linked to transcript words
-- frames are linked to nodes (text elements)
-- frames and audio segments are associated with application segments
-- events may be associated with specific segments
+Key relationships:
+- Audio segments are linked to transcript words
+- Frames are linked to nodes (text elements)
+- Frames and audio segments are associated with application segments
+- Events may be associated with specific segments
 
-## development
+## Development
 
-### setup for development
+### Setup for Development
 
 ```bash
 # clone the repository
@@ -295,7 +295,7 @@ pip install -e .
 pip install pytest black isort
 ```
 
-### running tests
+### Running Tests
 
 ```bash
 # run all tests
@@ -305,35 +305,35 @@ pytest
 pytest test_mcp_server.py
 ```
 
-## troubleshooting
+## Troubleshooting
 
-### database connection issues
+### Database Connection Issues
 
-if you encounter database connection errors:
+If you encounter database connection errors:
 
-1. verify that the rewind.ai application is installed and has created the database
-2. check that your `.env` file contains the correct database path and password
-3. ensure the rewinddb module is properly installed
+1. Verify that the Rewind.ai application is installed and has created the database
+2. Check that your `.env` file contains the correct database path and password
+3. Ensure the RewindDB module is properly installed
 
-### no transcripts found
+### No Transcripts Found
 
-if no transcripts are returned:
+If no transcripts are returned:
 
-1. verify that the time range contains data (try expanding the time range)
-2. check that rewind.ai was actively recording during the requested time period
-3. use the `--debug` flag with cli tools to see more information
+1. Verify that the time range contains data (try expanding the time range)
+2. Check that Rewind.ai was actively recording during the requested time period
+3. Use the `--debug` flag with CLI tools to see more information
 
-### mcp server issues
+### MCP Server Issues
 
-if the mcp server fails to start or respond:
+If the MCP server fails to start or respond:
 
-1. check that all dependencies are installed: `pip install fastapi uvicorn`
-2. verify that the port is not in use by another application
-3. check the server logs for specific error messages
+1. Check that all dependencies are installed: `pip install fastapi uvicorn`
+2. Verify that the port is not in use by another application
+3. Check the server logs for specific error messages
 
-## stats cli
+## Stats CLI
 
-the `stats_cli.py` tool provides comprehensive statistics about your rewind.ai data:
+The `stats_cli.py` tool provides comprehensive statistics about your Rewind.ai data:
 
 ```bash
 # get statistics about your rewind.ai data
@@ -343,15 +343,15 @@ python stats_cli.py
 python stats_cli.py --env /path/to/custom/.env
 ```
 
-the stats cli provides information about:
-- database overview (size, tables, record counts)
-- audio transcript statistics (counts by time period, earliest records)
-- screen ocr statistics (counts by time period, earliest records)
-- application usage statistics (most used applications, usage time)
-- table record counts
+The Stats CLI provides information about:
+- Database overview (size, tables, record counts)
+- Audio transcript statistics (counts by time period, earliest records)
+- Screen OCR statistics (counts by time period, earliest records)
+- Application usage statistics (most used applications, usage time)
+- Table record counts
 
-this tool is useful for understanding the scope and content of your rewind.ai data, and for diagnosing potential issues with data collection or storage.
+This tool is useful for understanding the scope and content of your Rewind.ai data, and for diagnosing potential issues with data collection or storage.
 
-## license
+## License
 
-mit
+MIT
