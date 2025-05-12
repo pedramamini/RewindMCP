@@ -15,7 +15,8 @@ import pysqlcipher3.dbapi2 as sqlite3
 from rewinddb.config import get_db_path, get_db_password
 
 # configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+log_level = logging.INFO if os.environ.get('DEBUG') == '1' else logging.CRITICAL
+logging.basicConfig(level=log_level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class RewindDB:
@@ -365,11 +366,21 @@ class RewindDB:
         start_time = now - datetime.timedelta(days=days)
 
         # search in audio transcripts
+        # Try both timestamp formats (milliseconds and ISO string)
+        start_timestamp_ms = int(start_time.timestamp() * 1000)
+        end_timestamp_ms = int(now.timestamp() * 1000)
+        start_timestamp_str = start_time.strftime("%Y-%m-%dT%H:%M:%S.000")
+        end_timestamp_str = now.strftime("%Y-%m-%dT%H:%M:%S.999")
+        search_term = query.lower()
+
+        # first find all matching words
+        # first try with millisecond timestamps
         audio_query = """
         SELECT
             a.id as audio_id,
             a.startTime as start_time,
             a.duration,
+            a.segmentId as segment_id,
             tw.id as word_id,
             tw.word,
             tw.timeOffset as time_offset,
@@ -379,71 +390,201 @@ class RewindDB:
         JOIN
             transcript_word tw ON a.segmentId = tw.segmentId
         WHERE
-            a.startTime BETWEEN ? AND ?
-            AND tw.word LIKE ?
+            (CAST(a.startTime AS INTEGER) BETWEEN ? AND ?)
+            AND INSTR(LOWER(tw.word), ?) > 0
         ORDER BY
             a.startTime, tw.timeOffset
         """
 
-        start_timestamp = int(start_time.timestamp() * 1000)
-        end_timestamp = int(now.timestamp() * 1000)
-        search_term = f"%{query}%"
+        self.cursor.execute(audio_query, (start_timestamp_ms, end_timestamp_ms, search_term))
+        audio_matches = self.cursor.fetchall()
 
-        self.cursor.execute(audio_query, (start_timestamp, end_timestamp, search_term))
-        audio_rows = self.cursor.fetchall()
+        # if no results with millisecond timestamps, try with string timestamps
+        if not audio_matches:
+            audio_query = """
+            SELECT
+                a.id as audio_id,
+                a.startTime as start_time,
+                a.duration,
+                a.segmentId as segment_id,
+                tw.id as word_id,
+                tw.word,
+                tw.timeOffset as time_offset,
+                tw.duration
+            FROM
+                audio a
+            JOIN
+                transcript_word tw ON a.segmentId = tw.segmentId
+            WHERE
+                (a.startTime BETWEEN ? AND ?)
+                AND INSTR(LOWER(tw.word), ?) > 0
+            ORDER BY
+                a.startTime, tw.timeOffset
+            """
+
+            self.cursor.execute(audio_query, (start_timestamp_str, end_timestamp_str, search_term))
+            audio_matches = self.cursor.fetchall()
 
         audio_results = []
-        for row in audio_rows:
-            audio_results.append({
-                'audio_id': row[0],
-                'audio_start_time': self._ms_to_datetime(row[1]),
-                'audio_duration': row[2],
-                'word_id': row[3],
-                'word': row[4],
-                'time_offset': row[5],
-                'duration': row[6],  # using duration instead of confidence
-                'absolute_time': self._ms_to_datetime(row[1] + row[5])
-            })
 
-        # search in screen ocr
-        screen_query = """
-        SELECT
-            f.id as frame_id,
-            f.createdAt as created_at,
-            f.segmentId as segment_id,
-            n.id as node_id,
-            n.textOffset,
-            n.textLength,
-            s.bundleID as app_name,
-            s.windowName as window_name
-        FROM
-            frame f
-        JOIN
-            node n ON f.id = n.frameId
-        JOIN
-            segment s ON f.segmentId = s.id
-        WHERE
-            f.createdAt BETWEEN ? AND ?
-        ORDER BY
-            f.createdAt
-        """
+        # for each match, get surrounding context words
+        for match in audio_matches:
+            audio_id = match[0]
+            start_time_val = match[1]
+            segment_id = match[3]
+            match_word_id = match[4]
+            match_word = match[5]
+            match_time_offset = match[6]
 
-        # Since we removed the text LIKE condition, we only need 2 parameters
-        self.cursor.execute(screen_query, (start_timestamp, end_timestamp))
-        screen_rows = self.cursor.fetchall()
+            # get context words (words before and after the match)
+            context_query = """
+            SELECT
+                tw.id as word_id,
+                tw.word,
+                tw.timeOffset as time_offset,
+                tw.duration
+            FROM
+                transcript_word tw
+            WHERE
+                tw.segmentId = ?
+                AND tw.timeOffset BETWEEN ? AND ?
+            ORDER BY
+                tw.timeOffset
+            """
 
-        screen_results = []
-        for row in screen_rows:
-            screen_results.append({
-                'frame_id': row[0],
-                'frame_time': self._ms_to_datetime(row[1]),
-                'segment_id': row[2],
-                'node_id': row[3],
-                'text_offset': row[4],
-                'text_length': row[5],
-                'application': row[6],
-                'window': row[7]
-            })
+            # get words within 5 seconds before and after the match
+            context_before = match_time_offset - 5000  # 5 seconds before
+            context_after = match_time_offset + 5000   # 5 seconds after
+
+            self.cursor.execute(context_query, (segment_id, context_before, context_after))
+            context_words = self.cursor.fetchall()
+
+            # parse the start time
+            if isinstance(start_time_val, str):
+                try:
+                    start_time_dt = datetime.datetime.strptime(start_time_val, "%Y-%m-%dT%H:%M:%S.%f")
+                except ValueError:
+                    try:
+                        start_time_dt = datetime.datetime.strptime(start_time_val, "%Y-%m-%dT%H:%M:%S")
+                    except ValueError:
+                        start_time_dt = self._ms_to_datetime(int(start_time_val))
+            else:
+                start_time_dt = self._ms_to_datetime(start_time_val)
+
+            # add all context words to results
+            for context_word in context_words:
+                word_id = context_word[0]
+                word = context_word[1]
+                time_offset = context_word[2]
+                duration = context_word[3]
+
+                # calculate absolute time for this word
+                if isinstance(start_time_val, str):
+                    if isinstance(time_offset, int):
+                        absolute_time = start_time_dt + datetime.timedelta(milliseconds=time_offset)
+                    else:
+                        absolute_time = start_time_dt
+                else:
+                    absolute_time = self._ms_to_datetime(start_time_val + time_offset)
+
+                # mark if this is the actual match
+                is_match = (word_id == match_word_id)
+
+                audio_results.append({
+                    'audio_id': audio_id,
+                    'audio_start_time': start_time_dt,
+                    'audio_duration': match[2],
+                    'word_id': word_id,
+                    'word': word,
+                    'time_offset': time_offset,
+                    'duration': duration,
+                    'absolute_time': absolute_time,
+                    'is_match': is_match
+                })
+
+        # Search in screen OCR data
+        # Since we don't have direct access to the text content, we'll use a full-text search approach
+        # using the search_content table if available
+        try:
+            # First, try to use the search_content table for full-text search
+            screen_query = """
+            SELECT
+                f.id as frame_id,
+                f.createdAt as created_at,
+                f.segmentId as segment_id,
+                n.id as node_id,
+                n.textOffset,
+                n.textLength,
+                s.bundleID as app_name,
+                s.windowName as window_name,
+                f.imageFileName
+            FROM
+                frame f
+            JOIN
+                node n ON f.id = n.frameId
+            JOIN
+                segment s ON f.segmentId = s.id
+            JOIN
+                search_content sc ON f.id = sc.docid
+            WHERE
+                f.createdAt BETWEEN ? AND ?
+                AND (LOWER(sc.c0text) LIKE ? OR LOWER(sc.c1otherText) LIKE ?)
+            ORDER BY
+                f.createdAt
+            """
+
+            self.cursor.execute(screen_query, (start_timestamp, end_timestamp, search_term, search_term))
+            screen_rows = self.cursor.fetchall()
+
+            # If no results from search_content, try a different approach
+            if not screen_rows:
+                # Get all frames in the time range and filter them client-side
+                # This is a fallback approach since we can't directly search the text
+                screen_query = """
+                SELECT
+                    f.id as frame_id,
+                    f.createdAt as created_at,
+                    f.segmentId as segment_id,
+                    n.id as node_id,
+                    n.textOffset,
+                    n.textLength,
+                    s.bundleID as app_name,
+                    s.windowName as window_name,
+                    f.imageFileName
+                FROM
+                    frame f
+                JOIN
+                    node n ON f.id = n.frameId
+                JOIN
+                    segment s ON f.segmentId = s.id
+                WHERE
+                    f.createdAt BETWEEN ? AND ?
+                    AND (LOWER(s.windowName) LIKE ? OR LOWER(s.bundleID) LIKE ?)
+                ORDER BY
+                    f.createdAt
+                LIMIT 100  -- Limit results to avoid performance issues
+                """
+
+                self.cursor.execute(screen_query, (start_timestamp, end_timestamp, search_term, search_term))
+                screen_rows = self.cursor.fetchall()
+
+            screen_results = []
+            for row in screen_rows:
+                screen_results.append({
+                    'frame_id': row[0],
+                    'frame_time': self._ms_to_datetime(row[1]),
+                    'segment_id': row[2],
+                    'node_id': row[3],
+                    'text_offset': row[4],
+                    'text_length': row[5],
+                    'application': row[6],
+                    'window': row[7],
+                    'image_file': row[8] if len(row) > 8 else None,
+                    'text': f"Screen match in {row[6]} - {row[7]}"  # Use app and window name as text
+                })
+        except Exception as e:
+            logger.error(f"Error in screen OCR search: {e}")
+            screen_results = []
 
         return {
             'audio': audio_results,

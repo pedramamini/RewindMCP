@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python
 """
 search_cli.py - command line interface for searching keywords in rewinddb.
@@ -143,22 +144,26 @@ def search_with_absolute_time(db, keyword, from_time_str, to_time_str, debug=Fal
         if debug:
             print(f"debug: searching for '{keyword}' from {from_time} to {to_time}")
 
-        # get audio transcripts for the time range
-        audio_transcripts = db.get_audio_transcripts_absolute(from_time, to_time)
+        # Use the search method with the absolute time range
+        # Convert the absolute time range to days for the search method
+        days = (to_time - from_time).total_seconds() / 86400
 
-        # get screen ocr for the time range
-        screen_ocr = db.get_screen_ocr_absolute(from_time, to_time)
+        if debug:
+            print(f"debug: calculated {days:.2f} days between {from_time} and {to_time}")
 
-        # filter results for the keyword
-        audio_results = [
-            item for item in audio_transcripts
-            if keyword.lower() in item['word'].lower()
-        ]
+        # Get search results using the search method
+        results = db.search(keyword, days=days)
 
-        screen_results = [
-            item for item in screen_ocr
-            if keyword.lower() in item['text'].lower()
-        ]
+        # Filter results to only include those within the specified time range
+        audio_results = []
+        for item in results['audio']:
+            if from_time <= item['absolute_time'] <= to_time:
+                audio_results.append(item)
+
+        screen_results = []
+        for item in results['screen']:
+            if from_time <= item['frame_time'] <= to_time:
+                screen_results.append(item)
 
         return {
             'audio': audio_results,
@@ -183,19 +188,47 @@ def format_audio_results(results, context=3):
     if not results:
         return "no audio matches found."
 
-    # group words by audio session
+    # group words by audio session and match time
     sessions = {}
     for item in results:
         audio_id = item['audio_id']
         if audio_id not in sessions:
             sessions[audio_id] = {
                 'start_time': item['audio_start_time'],
-                'words': [item],
-                'hit_indices': [0]  # index of the hit word in this session's words list
+                'matches': {}
             }
+
+        # if this is a match word, create a new match group
+        if item.get('is_match', False):
+            # use absolute_time as key to group matches
+            match_time = item['absolute_time']
+            time_key = match_time.strftime('%Y-%m-%d %H:%M:%S.%f')
+
+            if time_key not in sessions[audio_id]['matches']:
+                sessions[audio_id]['matches'][time_key] = {
+                    'match_time': match_time,
+                    'words': []
+                }
+
+        # add word to appropriate match group or closest one
+        if item.get('is_match', False):
+            match_time = item['absolute_time']
+            time_key = match_time.strftime('%Y-%m-%d %H:%M:%S.%f')
+            sessions[audio_id]['matches'][time_key]['words'].append(item)
         else:
-            sessions[audio_id]['words'].append(item)
-            sessions[audio_id]['hit_indices'].append(len(sessions[audio_id]['words']) - 1)
+            # find closest match time to add context word to
+            word_time = item['absolute_time']
+            closest_match = None
+            min_diff = float('inf')
+
+            for match_time_key, match_data in sessions[audio_id]['matches'].items():
+                diff = abs((word_time - match_data['match_time']).total_seconds())
+                if diff < min_diff:
+                    min_diff = diff
+                    closest_match = match_time_key
+
+            if closest_match:
+                sessions[audio_id]['matches'][closest_match]['words'].append(item)
 
     # format each session with context
     formatted_results = []
@@ -203,18 +236,21 @@ def format_audio_results(results, context=3):
         start_time = session['start_time'].strftime('%Y-%m-%d %H:%M:%S')
         formatted_results.append(f"[{start_time}] Audio Match:")
 
-        # sort words by time offset
-        words = sorted(session['words'], key=lambda x: x['time_offset'])
-        word_texts = [word['word'] for word in words]
+        # process each match in this session
+        for match_time_key, match_data in session['matches'].items():
+            # sort words by time offset
+            words = sorted(match_data['words'], key=lambda x: x['time_offset'])
 
-        # for each hit in this session, show context
-        for hit_idx in session['hit_indices']:
-            context_start = max(0, hit_idx - context)
-            context_end = min(len(word_texts), hit_idx + context + 1)
+            # format the context
+            word_texts = []
+            for word in words:
+                if word.get('is_match', False):
+                    # highlight match words
+                    word_texts.append(f"{word['word']}")
+                else:
+                    word_texts.append(word['word'])
 
-            # format the context with the hit word highlighted
-            context_words = word_texts[context_start:context_end]
-            context_text = " ".join(context_words)
+            context_text = " ".join(word_texts)
 
             # add the context to the results
             formatted_results.append(f"  ...{context_text}...")
@@ -246,21 +282,18 @@ def format_screen_results(results):
                 'time': item['frame_time'],
                 'application': item['application'],
                 'window': item['window'],
-                'texts': [item['text']]
+                'image_file': item.get('image_file')
             }
-        else:
-            frames[frame_id]['texts'].append(item['text'])
 
     # format each frame
     formatted_results = []
     for frame_id, frame in frames.items():
         time_str = frame['time'].strftime('%Y-%m-%d %H:%M:%S')
         app_str = f"{frame['application']} - {frame['window']}"
-        formatted_results.append(f"[{time_str}] Screen Match in {app_str}:")
+        formatted_results.append(f"[{time_str}] Screen Match in {app_str}")
 
-        # combine texts
-        for text in frame['texts']:
-            formatted_results.append(f"  {text}")
+        if frame.get('image_file'):
+            formatted_results.append(f"  Image file: {frame['image_file']}")
 
         formatted_results.append("")  # empty line between frames
 
