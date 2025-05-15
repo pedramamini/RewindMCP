@@ -212,7 +212,8 @@ class RewindDB:
             a list of dictionaries containing transcript data
         """
 
-        now = datetime.datetime.now()
+        # Use UTC timezone to be consistent with get_statistics
+        now = datetime.datetime.now(datetime.timezone.utc)
         delta = datetime.timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
         start_time = now - delta
 
@@ -342,7 +343,8 @@ class RewindDB:
             a list of dictionaries containing ocr data
         """
 
-        now = datetime.datetime.now()
+        # Use UTC timezone to be consistent with get_statistics
+        now = datetime.datetime.now(datetime.timezone.utc)
         delta = datetime.timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
         start_time = now - delta
 
@@ -362,7 +364,8 @@ class RewindDB:
             a dictionary with 'audio' and 'screen' keys containing matching results
         """
 
-        now = datetime.datetime.now()
+        # Use UTC timezone to be consistent with get_statistics
+        now = datetime.datetime.now(datetime.timezone.utc)
         start_time = now - datetime.timedelta(days=days)
 
         # search in audio transcripts
@@ -503,43 +506,74 @@ class RewindDB:
                 })
 
         # Search in screen OCR data
-        # Since we don't have direct access to the text content, we'll use a full-text search approach
-        # using the search_content table if available
         try:
-            # First, try to use the search_content table for full-text search
+            # First, try to use the searchRanking_content table which contains OCR text content
+            logger.info(f"Searching for '{search_term}' in searchRanking_content table")
             screen_query = """
             SELECT
+                src.id as content_id,
+                src.c0 as text_content,
+                src.c1 as timestamp_info,
+                src.c2 as window_info,
                 f.id as frame_id,
                 f.createdAt as created_at,
                 f.segmentId as segment_id,
-                n.id as node_id,
-                n.textOffset,
-                n.textLength,
                 s.bundleID as app_name,
                 s.windowName as window_name,
                 f.imageFileName
             FROM
-                frame f
-            JOIN
-                node n ON f.id = n.frameId
-            JOIN
+                searchRanking_content src
+            LEFT JOIN
+                frame f ON src.id = f.id
+            LEFT JOIN
                 segment s ON f.segmentId = s.id
-            JOIN
-                search_content sc ON f.id = sc.docid
             WHERE
-                f.createdAt BETWEEN ? AND ?
-                AND (LOWER(sc.c0text) LIKE ? OR LOWER(sc.c1otherText) LIKE ?)
+                LOWER(src.c0) LIKE ?
             ORDER BY
-                f.createdAt
+                src.id DESC
+            LIMIT 100  -- Limit results to avoid performance issues
             """
 
-            self.cursor.execute(screen_query, (start_timestamp, end_timestamp, search_term, search_term))
+            # add wildcards for LIKE query
+            like_term = f"%{search_term}%"
+            self.cursor.execute(screen_query, (like_term,))
             screen_rows = self.cursor.fetchall()
 
-            # If no results from search_content, try a different approach
             if not screen_rows:
-                # Get all frames in the time range and filter them client-side
-                # This is a fallback approach since we can't directly search the text
+                logger.info(f"No results found in searchRanking_content table, trying search_content table")
+                # Try to use the search_content table for full-text search
+                screen_query = """
+                SELECT
+                    f.id as frame_id,
+                    f.createdAt as created_at,
+                    f.segmentId as segment_id,
+                    n.id as node_id,
+                    n.textOffset,
+                    n.textLength,
+                    s.bundleID as app_name,
+                    s.windowName as window_name,
+                    f.imageFileName
+                FROM
+                    frame f
+                JOIN
+                    node n ON f.id = n.frameId
+                JOIN
+                    segment s ON f.segmentId = s.id
+                JOIN
+                    search_content sc ON f.id = sc.docid
+                WHERE
+                    f.createdAt BETWEEN ? AND ?
+                    AND (LOWER(sc.c0text) LIKE ? OR LOWER(sc.c1otherText) LIKE ?)
+                ORDER BY
+                    f.createdAt
+                """
+
+                self.cursor.execute(screen_query, (start_timestamp, end_timestamp, like_term, like_term))
+                screen_rows = self.cursor.fetchall()
+
+            # If still no results, try searching in window names and bundle IDs
+            if not screen_rows:
+                logger.info(f"No results found in search_content table, trying window names and bundle IDs")
                 screen_query = """
                 SELECT
                     f.id as frame_id,
@@ -565,23 +599,43 @@ class RewindDB:
                 LIMIT 100  -- Limit results to avoid performance issues
                 """
 
-                self.cursor.execute(screen_query, (start_timestamp, end_timestamp, search_term, search_term))
+                self.cursor.execute(screen_query, (start_timestamp, end_timestamp, like_term, like_term))
                 screen_rows = self.cursor.fetchall()
 
             screen_results = []
             for row in screen_rows:
-                screen_results.append({
-                    'frame_id': row[0],
-                    'frame_time': self._ms_to_datetime(row[1]),
-                    'segment_id': row[2],
-                    'node_id': row[3],
-                    'text_offset': row[4],
-                    'text_length': row[5],
-                    'application': row[6],
-                    'window': row[7],
-                    'image_file': row[8] if len(row) > 8 else None,
-                    'text': f"Screen match in {row[6]} - {row[7]}"  # Use app and window name as text
-                })
+                result = {}
+
+                # Handle results from searchRanking_content query
+                if len(row) >= 4 and row[0] is not None and row[1] is not None:
+                    result = {
+                        'content_id': row[0],
+                        'text': row[1][:100] + "..." if row[1] and len(row[1]) > 100 else row[1],
+                        'timestamp_info': row[2],
+                        'window_info': row[3],
+                        'frame_id': row[4] if len(row) > 4 else None,
+                        'frame_time': self._ms_to_datetime(row[5]) if len(row) > 5 and row[5] else None,
+                        'segment_id': row[6] if len(row) > 6 else None,
+                        'application': row[7] if len(row) > 7 else None,
+                        'window': row[8] if len(row) > 8 else None,
+                        'image_file': row[9] if len(row) > 9 else None
+                    }
+                # Handle results from other queries
+                else:
+                    result = {
+                        'frame_id': row[0],
+                        'frame_time': self._ms_to_datetime(row[1]) if row[1] else None,
+                        'segment_id': row[2] if len(row) > 2 else None,
+                        'node_id': row[3] if len(row) > 3 else None,
+                        'text_offset': row[4] if len(row) > 4 else None,
+                        'text_length': row[5] if len(row) > 5 else None,
+                        'application': row[6] if len(row) > 6 else None,
+                        'window': row[7] if len(row) > 7 else None,
+                        'image_file': row[8] if len(row) > 8 else None,
+                        'text': f"Screen match in {row[6]} - {row[7]}" if len(row) > 7 else "Screen match"
+                    }
+
+                screen_results.append(result)
         except Exception as e:
             logger.error(f"Error in screen OCR search: {e}")
             screen_results = []
@@ -773,38 +827,71 @@ class RewindDB:
             ms: milliseconds since epoch
 
         returns:
-            datetime object representing the timestamp
+            datetime object representing the timestamp in UTC
         """
 
-        return datetime.datetime.fromtimestamp(ms / 1000)
+        # Convert to UTC datetime to match the now() call in get_statistics
+        return datetime.datetime.fromtimestamp(ms / 1000, tz=datetime.timezone.utc)
 
-    def get_statistics(self) -> dict:
+    def get_statistics(self, days: int = 0, hours: int = 0, minutes: int = 0, seconds: int = 0) -> dict:
         """collect comprehensive statistics about the rewind database.
 
         gathers statistics about audio transcripts, screen ocr data,
         application usage, and general database metrics.
+
+        args:
+            days: number of days to look back (default: 0)
+            hours: number of hours to look back (default: 0)
+            minutes: number of minutes to look back (default: 0)
+            seconds: number of seconds to look back (default: 0)
 
         returns:
             dict: dictionary with comprehensive statistics
         """
         # Get date ranges for time-based statistics
         now = datetime.datetime.now(datetime.timezone.utc)
-        hour_ago = now - datetime.timedelta(hours=1)
-        day_ago = now - datetime.timedelta(days=1)
-        week_ago = now - datetime.timedelta(days=7)
-        month_ago = now - datetime.timedelta(days=30)
+
+        # check if relative time parameters are provided
+        is_relative = any([days, hours, minutes, seconds])
+
+        if is_relative:
+            # calculate the relative time range
+            delta = datetime.timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+            start_time = now - delta
+
+            # for relative time queries, we only need one time range
+            hour_ago = start_time
+            day_ago = start_time
+            week_ago = start_time
+            month_ago = start_time
+        else:
+            # use default time ranges for standard statistics
+            hour_ago = now - datetime.timedelta(hours=1)
+            day_ago = now - datetime.timedelta(days=1)
+            week_ago = now - datetime.timedelta(days=7)
+            month_ago = now - datetime.timedelta(days=30)
 
         # Audio statistics
-        audio_stats = self._get_audio_stats(now, hour_ago, day_ago, week_ago, month_ago)
+        audio_stats = self._get_audio_stats(now, hour_ago, day_ago, week_ago, month_ago, is_relative)
 
         # Screen statistics
-        screen_stats = self._get_screen_stats(now, hour_ago, day_ago, week_ago, month_ago)
+        screen_stats = self._get_screen_stats(now, hour_ago, day_ago, week_ago, month_ago, is_relative)
 
         # App usage statistics
-        app_stats = self._get_app_usage_stats(now, week_ago)
+        app_stats = self._get_app_usage_stats(now, week_ago, is_relative)
 
         # Database statistics
-        db_stats = self._get_database_stats()
+        # Note: This is the most time-consuming part, so we skip it for relative time queries
+        if is_relative:
+            # For relative time, use a simplified version with just the essential info
+            db_stats = {
+                'table_stats': [],  # Empty list to avoid scanning all tables
+                'db_size_mb': 0,    # Skip file size calculation
+                'table_count': 0    # Skip table count calculation
+            }
+        else:
+            # For standard statistics, get full database stats
+            db_stats = self._get_database_stats()
 
         return {
             'audio': audio_stats,
@@ -813,7 +900,7 @@ class RewindDB:
             'database': db_stats
         }
 
-    def _get_audio_stats(self, now, hour_ago, day_ago, week_ago, month_ago) -> dict:
+    def _get_audio_stats(self, now, hour_ago, day_ago, week_ago, month_ago, is_relative=False) -> dict:
         """collect statistics about audio transcripts.
 
         internal method to gather metrics about audio transcripts.
@@ -828,87 +915,194 @@ class RewindDB:
         week_ago_ts = int(week_ago.timestamp() * 1000)
         month_ago_ts = int(month_ago.timestamp() * 1000)
 
-        # Get transcript counts for different time periods
+        # Log the timestamps for debugging
+        logger.info(f"now: {now}, now_ts: {now_ts}")
+        logger.info(f"hour_ago: {hour_ago}, hour_ago_ts: {hour_ago_ts}")
+
+        # Also log the actual datetime objects for comparison
+        logger.info(f"now timezone: {now.tzinfo}")
+        logger.info(f"hour_ago timezone: {hour_ago.tzinfo}")
+
+        # Initialize count variables
+        hour_count = day_count = week_count = month_count = 0
+
+        # Get transcript counts
         try:
-            # Hour count
-            self.cursor.execute("""
-                SELECT COUNT(*) FROM transcript_word tw
-                JOIN audio a ON tw.segmentId = a.segmentId
-                WHERE a.startTime + tw.timeOffset BETWEEN ? AND ?
-            """, (hour_ago_ts, now_ts))
-            hour_count = self.cursor.fetchone()[0]
+            if is_relative:
+                # For relative time, only execute one query
+                # Log the SQL query for debugging
+                query = """
+                    SELECT COUNT(*) FROM transcript_word tw
+                    JOIN audio a ON tw.segmentId = a.segmentId
+                    WHERE a.startTime + tw.timeOffset BETWEEN ? AND ?
+                """
+                logger.info(f"Executing query: {query} with params: ({hour_ago_ts}, {now_ts})")
 
-            # Day count
-            self.cursor.execute("""
-                SELECT COUNT(*) FROM transcript_word tw
-                JOIN audio a ON tw.segmentId = a.segmentId
-                WHERE a.startTime + tw.timeOffset BETWEEN ? AND ?
-            """, (day_ago_ts, now_ts))
-            day_count = self.cursor.fetchone()[0]
+                self.cursor.execute(query, (hour_ago_ts, now_ts))
+                result = self.cursor.fetchone()
+                hour_count = result[0] if result else 0
 
-            # Week count
-            self.cursor.execute("""
-                SELECT COUNT(*) FROM transcript_word tw
-                JOIN audio a ON tw.segmentId = a.segmentId
-                WHERE a.startTime + tw.timeOffset BETWEEN ? AND ?
-            """, (week_ago_ts, now_ts))
-            week_count = self.cursor.fetchone()[0]
+                logger.info(f"Query result: {result}")
 
-            # Month count
-            self.cursor.execute("""
-                SELECT COUNT(*) FROM transcript_word tw
-                JOIN audio a ON tw.segmentId = a.segmentId
-                WHERE a.startTime + tw.timeOffset BETWEEN ? AND ?
-            """, (month_ago_ts, now_ts))
-            month_count = self.cursor.fetchone()[0]
+                # Try a simpler query to see if there's any data in the audio table
+                self.cursor.execute("SELECT COUNT(*) FROM audio")
+                total_audio_count = self.cursor.fetchone()[0]
+                logger.info(f"Total audio records: {total_audio_count}")
+
+                # Try a query with a wider time range
+                one_year_ago_ts = int((now - datetime.timedelta(days=365)).timestamp() * 1000)
+                self.cursor.execute("""
+                    SELECT COUNT(*) FROM audio
+                    WHERE startTime BETWEEN ? AND ?
+                """, (one_year_ago_ts, now_ts))
+                year_audio_count = self.cursor.fetchone()[0]
+                logger.info(f"Audio records in the past year: {year_audio_count}")
+
+                # Try to get the earliest and latest audio record
+                self.cursor.execute("SELECT MIN(startTime), MAX(startTime) FROM audio")
+                min_max = self.cursor.fetchone()
+                if min_max and min_max[0] and min_max[1]:
+                    min_time = self._ms_to_datetime(min_max[0]) if isinstance(min_max[0], int) else min_max[0]
+                    max_time = self._ms_to_datetime(min_max[1]) if isinstance(min_max[1], int) else min_max[1]
+                    logger.info(f"Earliest audio record: {min_time}, Latest audio record: {max_time}")
+            else:
+                # For standard statistics, execute all queries
+                # Hour count
+                self.cursor.execute("""
+                    SELECT COUNT(*) FROM transcript_word tw
+                    JOIN audio a ON tw.segmentId = a.segmentId
+                    WHERE a.startTime + tw.timeOffset BETWEEN ? AND ?
+                """, (hour_ago_ts, now_ts))
+                hour_count = self.cursor.fetchone()[0]
+
+                # Day count
+                self.cursor.execute("""
+                    SELECT COUNT(*) FROM transcript_word tw
+                    JOIN audio a ON tw.segmentId = a.segmentId
+                    WHERE a.startTime + tw.timeOffset BETWEEN ? AND ?
+                """, (day_ago_ts, now_ts))
+                day_count = self.cursor.fetchone()[0]
+
+                # Week count
+                self.cursor.execute("""
+                    SELECT COUNT(*) FROM transcript_word tw
+                    JOIN audio a ON tw.segmentId = a.segmentId
+                    WHERE a.startTime + tw.timeOffset BETWEEN ? AND ?
+                """, (week_ago_ts, now_ts))
+                week_count = self.cursor.fetchone()[0]
+
+                # Month count
+                self.cursor.execute("""
+                    SELECT COUNT(*) FROM transcript_word tw
+                    JOIN audio a ON tw.segmentId = a.segmentId
+                    WHERE a.startTime + tw.timeOffset BETWEEN ? AND ?
+                """, (month_ago_ts, now_ts))
+                month_count = self.cursor.fetchone()[0]
         except Exception as e:
             logger.error(f"error getting transcript counts: {e}")
             hour_count = day_count = week_count = month_count = 0
 
-        # Get earliest audio record
-        try:
-            self.cursor.execute("SELECT MIN(startTime) FROM audio")
-            earliest_timestamp = self.cursor.fetchone()[0]
-            if isinstance(earliest_timestamp, int):
-                earliest_date = self._ms_to_datetime(earliest_timestamp)
-            elif isinstance(earliest_timestamp, str):
-                try:
-                    earliest_date = datetime.datetime.strptime(earliest_timestamp, "%Y-%m-%dT%H:%M:%S.%f")
-                except ValueError:
-                    earliest_date = datetime.datetime.strptime(earliest_timestamp, "%Y-%m-%dT%H:%M:%S")
-            else:
+        # Get earliest audio record and total counts
+        if is_relative:
+            # For relative time, only consider records within the time period
+            try:
+                self.cursor.execute("""
+                    SELECT MIN(startTime) FROM audio
+                    WHERE startTime BETWEEN ? AND ?
+                """, (hour_ago_ts, now_ts))
+                earliest_timestamp = self.cursor.fetchone()[0]
+
+                # If no records in the time period, use None
+                if earliest_timestamp is None:
+                    earliest_date = None
+                elif isinstance(earliest_timestamp, int):
+                    earliest_date = self._ms_to_datetime(earliest_timestamp)
+                elif isinstance(earliest_timestamp, str):
+                    try:
+                        earliest_date = datetime.datetime.strptime(earliest_timestamp, "%Y-%m-%dT%H:%M:%S.%f")
+                    except ValueError:
+                        earliest_date = datetime.datetime.strptime(earliest_timestamp, "%Y-%m-%dT%H:%M:%S")
+                else:
+                    earliest_date = None
+            except Exception as e:
+                logger.error(f"error getting earliest audio record: {e}")
                 earliest_date = None
-        except Exception as e:
-            logger.error(f"error getting earliest audio record: {e}")
-            earliest_date = None
 
-        # Get total audio records
-        try:
-            self.cursor.execute("SELECT COUNT(*) FROM audio")
-            total_audio = self.cursor.fetchone()[0]
-        except Exception as e:
-            logger.error(f"error getting total audio count: {e}")
-            total_audio = 0
+            # Get total audio records within the time period
+            try:
+                self.cursor.execute("""
+                    SELECT COUNT(*) FROM audio
+                    WHERE startTime BETWEEN ? AND ?
+                """, (hour_ago_ts, now_ts))
+                total_audio = self.cursor.fetchone()[0]
+            except Exception as e:
+                logger.error(f"error getting total audio count: {e}")
+                total_audio = 0
 
-        # Get total transcript words
-        try:
-            self.cursor.execute("SELECT COUNT(*) FROM transcript_word")
-            total_words = self.cursor.fetchone()[0]
-        except Exception as e:
-            logger.error(f"error getting total word count: {e}")
-            total_words = 0
+            # Get total transcript words within the time period
+            try:
+                self.cursor.execute("""
+                    SELECT COUNT(*) FROM transcript_word tw
+                    JOIN audio a ON tw.segmentId = a.segmentId
+                    WHERE a.startTime + tw.timeOffset BETWEEN ? AND ?
+                """, (hour_ago_ts, now_ts))
+                total_words = self.cursor.fetchone()[0]
+            except Exception as e:
+                logger.error(f"error getting total word count: {e}")
+                total_words = 0
+        else:
+            # For standard statistics, get global counts
+            try:
+                self.cursor.execute("SELECT MIN(startTime) FROM audio")
+                earliest_timestamp = self.cursor.fetchone()[0]
+                if isinstance(earliest_timestamp, int):
+                    earliest_date = self._ms_to_datetime(earliest_timestamp)
+                elif isinstance(earliest_timestamp, str):
+                    try:
+                        earliest_date = datetime.datetime.strptime(earliest_timestamp, "%Y-%m-%dT%H:%M:%S.%f")
+                    except ValueError:
+                        earliest_date = datetime.datetime.strptime(earliest_timestamp, "%Y-%m-%dT%H:%M:%S")
+                else:
+                    earliest_date = None
+            except Exception as e:
+                logger.error(f"error getting earliest audio record: {e}")
+                earliest_date = None
 
-        return {
-            'hour_count': hour_count,
-            'day_count': day_count,
-            'week_count': week_count,
-            'month_count': month_count,
+            # Get total audio records
+            try:
+                self.cursor.execute("SELECT COUNT(*) FROM audio")
+                total_audio = self.cursor.fetchone()[0]
+            except Exception as e:
+                logger.error(f"error getting total audio count: {e}")
+                total_audio = 0
+
+            # Get total transcript words
+            try:
+                self.cursor.execute("SELECT COUNT(*) FROM transcript_word")
+                total_words = self.cursor.fetchone()[0]
+            except Exception as e:
+                logger.error(f"error getting total word count: {e}")
+                total_words = 0
+
+        result = {
             'earliest_date': earliest_date,
             'total_audio': total_audio,
             'total_words': total_words
         }
 
-    def _get_screen_stats(self, now, hour_ago, day_ago, week_ago, month_ago) -> dict:
+        if is_relative:
+            # for relative time queries, we only need one count
+            result['relative_count'] = hour_count
+        else:
+            # for standard statistics, include all time periods
+            result['hour_count'] = hour_count
+            result['day_count'] = day_count
+            result['week_count'] = week_count
+            result['month_count'] = month_count
+
+        return result
+
+    def _get_screen_stats(self, now, hour_ago, day_ago, week_ago, month_ago, is_relative=False) -> dict:
         """collect statistics about screen ocr data.
 
         internal method to gather metrics about screen ocr data.
@@ -923,87 +1117,157 @@ class RewindDB:
         week_ago_ts = int(week_ago.timestamp() * 1000)
         month_ago_ts = int(month_ago.timestamp() * 1000)
 
-        # Get ocr counts for different time periods
+        # Initialize count variables
+        hour_count = day_count = week_count = month_count = 0
+
+        # Get ocr counts
         try:
-            # Hour count
-            self.cursor.execute("""
-                SELECT COUNT(*) FROM node n
-                JOIN frame f ON n.frameId = f.id
-                WHERE f.createdAt BETWEEN ? AND ?
-            """, (hour_ago_ts, now_ts))
-            hour_count = self.cursor.fetchone()[0]
+            if is_relative:
+                # For relative time, only execute one query
+                self.cursor.execute("""
+                    SELECT COUNT(*) FROM node n
+                    JOIN frame f ON n.frameId = f.id
+                    WHERE f.createdAt BETWEEN ? AND ?
+                """, (hour_ago_ts, now_ts))
+                hour_count = self.cursor.fetchone()[0]
+            else:
+                # For standard statistics, execute all queries
+                # Hour count
+                self.cursor.execute("""
+                    SELECT COUNT(*) FROM node n
+                    JOIN frame f ON n.frameId = f.id
+                    WHERE f.createdAt BETWEEN ? AND ?
+                """, (hour_ago_ts, now_ts))
+                hour_count = self.cursor.fetchone()[0]
 
-            # Day count
-            self.cursor.execute("""
-                SELECT COUNT(*) FROM node n
-                JOIN frame f ON n.frameId = f.id
-                WHERE f.createdAt BETWEEN ? AND ?
-            """, (day_ago_ts, now_ts))
-            day_count = self.cursor.fetchone()[0]
+                # Day count
+                self.cursor.execute("""
+                    SELECT COUNT(*) FROM node n
+                    JOIN frame f ON n.frameId = f.id
+                    WHERE f.createdAt BETWEEN ? AND ?
+                """, (day_ago_ts, now_ts))
+                day_count = self.cursor.fetchone()[0]
 
-            # Week count
-            self.cursor.execute("""
-                SELECT COUNT(*) FROM node n
-                JOIN frame f ON n.frameId = f.id
-                WHERE f.createdAt BETWEEN ? AND ?
-            """, (week_ago_ts, now_ts))
-            week_count = self.cursor.fetchone()[0]
+                # Week count
+                self.cursor.execute("""
+                    SELECT COUNT(*) FROM node n
+                    JOIN frame f ON n.frameId = f.id
+                    WHERE f.createdAt BETWEEN ? AND ?
+                """, (week_ago_ts, now_ts))
+                week_count = self.cursor.fetchone()[0]
 
-            # Month count
-            self.cursor.execute("""
-                SELECT COUNT(*) FROM node n
-                JOIN frame f ON n.frameId = f.id
-                WHERE f.createdAt BETWEEN ? AND ?
-            """, (month_ago_ts, now_ts))
-            month_count = self.cursor.fetchone()[0]
+                # Month count
+                self.cursor.execute("""
+                    SELECT COUNT(*) FROM node n
+                    JOIN frame f ON n.frameId = f.id
+                    WHERE f.createdAt BETWEEN ? AND ?
+                """, (month_ago_ts, now_ts))
+                month_count = self.cursor.fetchone()[0]
         except Exception as e:
             logger.error(f"error getting ocr counts: {e}")
             hour_count = day_count = week_count = month_count = 0
 
-        # Get earliest frame record
-        try:
-            self.cursor.execute("SELECT MIN(createdAt) FROM frame")
-            earliest_timestamp = self.cursor.fetchone()[0]
-            if isinstance(earliest_timestamp, int):
-                earliest_date = self._ms_to_datetime(earliest_timestamp)
-            elif isinstance(earliest_timestamp, str):
-                try:
-                    earliest_date = datetime.datetime.strptime(earliest_timestamp, "%Y-%m-%dT%H:%M:%S.%f")
-                except ValueError:
-                    earliest_date = datetime.datetime.strptime(earliest_timestamp, "%Y-%m-%dT%H:%M:%S")
-            else:
+        # Get earliest frame record and total counts
+        if is_relative:
+            # For relative time, only consider records within the time period
+            try:
+                self.cursor.execute("""
+                    SELECT MIN(createdAt) FROM frame
+                    WHERE createdAt BETWEEN ? AND ?
+                """, (hour_ago_ts, now_ts))
+                earliest_timestamp = self.cursor.fetchone()[0]
+
+                # If no records in the time period, use None
+                if earliest_timestamp is None:
+                    earliest_date = None
+                elif isinstance(earliest_timestamp, int):
+                    earliest_date = self._ms_to_datetime(earliest_timestamp)
+                elif isinstance(earliest_timestamp, str):
+                    try:
+                        earliest_date = datetime.datetime.strptime(earliest_timestamp, "%Y-%m-%dT%H:%M:%S.%f")
+                    except ValueError:
+                        earliest_date = datetime.datetime.strptime(earliest_timestamp, "%Y-%m-%dT%H:%M:%S")
+                else:
+                    earliest_date = None
+            except Exception as e:
+                logger.error(f"error getting earliest frame record: {e}")
                 earliest_date = None
-        except Exception as e:
-            logger.error(f"error getting earliest frame record: {e}")
-            earliest_date = None
 
-        # Get total frame records
-        try:
-            self.cursor.execute("SELECT COUNT(*) FROM frame")
-            total_frames = self.cursor.fetchone()[0]
-        except Exception as e:
-            logger.error(f"error getting total frame count: {e}")
-            total_frames = 0
+            # Get total frame records within the time period
+            try:
+                self.cursor.execute("""
+                    SELECT COUNT(*) FROM frame
+                    WHERE createdAt BETWEEN ? AND ?
+                """, (hour_ago_ts, now_ts))
+                total_frames = self.cursor.fetchone()[0]
+            except Exception as e:
+                logger.error(f"error getting total frame count: {e}")
+                total_frames = 0
 
-        # Get total node records
-        try:
-            self.cursor.execute("SELECT COUNT(*) FROM node")
-            total_nodes = self.cursor.fetchone()[0]
-        except Exception as e:
-            logger.error(f"error getting total node count: {e}")
-            total_nodes = 0
+            # Get total node records within the time period
+            try:
+                self.cursor.execute("""
+                    SELECT COUNT(*) FROM node n
+                    JOIN frame f ON n.frameId = f.id
+                    WHERE f.createdAt BETWEEN ? AND ?
+                """, (hour_ago_ts, now_ts))
+                total_nodes = self.cursor.fetchone()[0]
+            except Exception as e:
+                logger.error(f"error getting total node count: {e}")
+                total_nodes = 0
+        else:
+            # For standard statistics, get global counts
+            try:
+                self.cursor.execute("SELECT MIN(createdAt) FROM frame")
+                earliest_timestamp = self.cursor.fetchone()[0]
+                if isinstance(earliest_timestamp, int):
+                    earliest_date = self._ms_to_datetime(earliest_timestamp)
+                elif isinstance(earliest_timestamp, str):
+                    try:
+                        earliest_date = datetime.datetime.strptime(earliest_timestamp, "%Y-%m-%dT%H:%M:%S.%f")
+                    except ValueError:
+                        earliest_date = datetime.datetime.strptime(earliest_timestamp, "%Y-%m-%dT%H:%M:%S")
+                else:
+                    earliest_date = None
+            except Exception as e:
+                logger.error(f"error getting earliest frame record: {e}")
+                earliest_date = None
 
-        return {
-            'hour_count': hour_count,
-            'day_count': day_count,
-            'week_count': week_count,
-            'month_count': month_count,
+            # Get total frame records
+            try:
+                self.cursor.execute("SELECT COUNT(*) FROM frame")
+                total_frames = self.cursor.fetchone()[0]
+            except Exception as e:
+                logger.error(f"error getting total frame count: {e}")
+                total_frames = 0
+
+            # Get total node records
+            try:
+                self.cursor.execute("SELECT COUNT(*) FROM node")
+                total_nodes = self.cursor.fetchone()[0]
+            except Exception as e:
+                logger.error(f"error getting total node count: {e}")
+                total_nodes = 0
+
+        result = {
             'earliest_date': earliest_date,
             'total_frames': total_frames,
             'total_nodes': total_nodes
         }
 
-    def _get_app_usage_stats(self, now, week_ago) -> dict:
+        if is_relative:
+            # for relative time queries, we only need one count
+            result['relative_count'] = hour_count
+        else:
+            # for standard statistics, include all time periods
+            result['hour_count'] = hour_count
+            result['day_count'] = day_count
+            result['week_count'] = week_count
+            result['month_count'] = month_count
+
+        return result
+
+    def _get_app_usage_stats(self, now, week_ago, is_relative=False) -> dict:
         """collect statistics about application usage.
 
         internal method to gather metrics about application usage.
@@ -1091,7 +1355,22 @@ class RewindDB:
 
         # Get total segments
         try:
-            self.cursor.execute("SELECT COUNT(*) FROM segment")
+            if is_relative:
+                # For relative time, only count segments within the time period
+                self.cursor.execute("""
+                    SELECT COUNT(*) FROM segment
+                    WHERE (startDate BETWEEN ? AND ?) OR
+                          (endDate BETWEEN ? AND ?) OR
+                          (startDate <= ? AND endDate >= ?)
+                """, (
+                    week_ago_ts, now_ts,
+                    week_ago_ts, now_ts,
+                    week_ago_ts, now_ts
+                ))
+            else:
+                # For standard statistics, count all segments
+                self.cursor.execute("SELECT COUNT(*) FROM segment")
+
             total_segments = self.cursor.fetchone()[0]
         except Exception as e:
             logger.error(f"error getting total segment count: {e}")

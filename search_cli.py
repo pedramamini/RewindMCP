@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python
 """
 search_cli.py - command line interface for searching keywords in rewinddb.
@@ -17,15 +16,19 @@ call flow:
 6. close database connection
 
 the cli supports three main query modes:
-- simple keyword search with default time range (e.g., "python search_cli.py --keyword meeting")
-- relative time queries (e.g., "python search_cli.py --keyword meeting --relative "1 day"")
+- simple keyword search with default time range (e.g., "python search_cli.py meeting")
+- relative time queries (e.g., "python search_cli.py meeting --relative "1 day"" or "--relative "5h"")
 - specific time range queries with --from and --to timestamps
 
 examples:
-  python search_cli.py --keyword "meeting"
-  python search_cli.py --keyword "project" --from "2023-05-11 13:00:00" --to "2023-05-11 17:00:00"
-  python search_cli.py --keyword "presentation" --relative "1 day"
-  python search_cli.py --keyword "python" --context 5 --debug
+  python search_cli.py "meeting"
+  python search_cli.py "project" --from "2023-05-11 13:00:00" --to "2023-05-11 17:00:00"
+  python search_cli.py "presentation" --relative "1 day"
+  python search_cli.py "meeting" --relative "5h"
+  python search_cli.py "code" --relative "3m"
+  python search_cli.py "project" --relative "10d"
+  python search_cli.py "design" --relative "2w"
+  python search_cli.py "python" --context 5 --debug
 """
 
 import argparse
@@ -41,7 +44,7 @@ def parse_relative_time(time_str):
     """parse a relative time string into timedelta components.
 
     args:
-        time_str: string like "1 hour", "5 hours", "30 minutes"
+        time_str: string like "1 hour", "5 hours", "30 minutes" or short form "5h", "3m", "10d", "2w"
 
     returns:
         dict with keys for days, hours, minutes, seconds
@@ -53,12 +56,31 @@ def parse_relative_time(time_str):
     time_str = time_str.lower().strip()
     time_components = {"days": 0, "hours": 0, "minutes": 0, "seconds": 0}
 
-    # regex patterns for different time units
+    # short form pattern (e.g., "5h", "3m", "10d", "2w")
+    short_patterns = {
+        r"^(\d+)w$": lambda x: {"days": int(x) * 7},
+        r"^(\d+)d$": lambda x: {"days": int(x)},
+        r"^(\d+)h$": lambda x: {"hours": int(x)},
+        r"^(\d+)m$": lambda x: {"minutes": int(x)},
+        r"^(\d+)s$": lambda x: {"seconds": int(x)}
+    }
+
+    # check for short form patterns first
+    for pattern, handler in short_patterns.items():
+        match = re.search(pattern, time_str)
+        if match:
+            component_values = handler(match.group(1))
+            for component, value in component_values.items():
+                time_components[component] = value
+            return time_components
+
+    # long form patterns
     patterns = {
         r"(\d+)\s*(?:day|days)": "days",
         r"(\d+)\s*(?:hour|hours|hr|hrs)": "hours",
         r"(\d+)\s*(?:minute|minutes|min|mins)": "minutes",
-        r"(\d+)\s*(?:second|seconds|sec|secs)": "seconds"
+        r"(\d+)\s*(?:second|seconds|sec|secs)": "seconds",
+        r"(\d+)\s*(?:week|weeks)": "weeks"
     }
 
     # try to match each pattern
@@ -66,11 +88,14 @@ def parse_relative_time(time_str):
     for pattern, component in patterns.items():
         match = re.search(pattern, time_str)
         if match:
-            time_components[component] = int(match.group(1))
+            if component == "weeks":
+                time_components["days"] += int(match.group(1)) * 7
+            else:
+                time_components[component] = int(match.group(1))
             found_match = True
 
     if not found_match:
-        raise ValueError(f"invalid time format: {time_str}. use format like '1 hour', '5 hours', '30 minutes'.")
+        raise ValueError(f"invalid time format: {time_str}. use format like '1 hour', '5h', '30m', '2d', '1w'.")
 
     return time_components
 
@@ -273,29 +298,147 @@ def format_screen_results(results):
     if not results:
         return "no screen matches found."
 
-    # group by frame
-    frames = {}
-    for item in results:
-        frame_id = item['frame_id']
-        if frame_id not in frames:
-            frames[frame_id] = {
-                'time': item['frame_time'],
-                'application': item['application'],
-                'window': item['window'],
-                'image_file': item.get('image_file')
-            }
-
-    # format each frame
+    # format each result
     formatted_results = []
-    for frame_id, frame in frames.items():
-        time_str = frame['time'].strftime('%Y-%m-%d %H:%M:%S')
-        app_str = f"{frame['application']} - {frame['window']}"
-        formatted_results.append(f"[{time_str}] Screen Match in {app_str}")
 
-        if frame.get('image_file'):
-            formatted_results.append(f"  Image file: {frame['image_file']}")
+    for item in results:
+        # handle results from searchRanking_content
+        if 'text' in item and item['text']:
+            # try to get a timestamp
+            timestamp = None
+            if 'frame_time' in item and item['frame_time']:
+                timestamp = item['frame_time']
+            elif 'timestamp_info' in item and item['timestamp_info']:
+                # try to extract timestamp from timestamp_info
+                timestamp_str = str(item['timestamp_info'])
+                if "UTC:" in timestamp_str:
+                    timestamp_str = timestamp_str.split("UTC:")[0].strip()
+                    try:
+                        timestamp = datetime.datetime.strptime(timestamp_str, "%a %b %d %I:%M:%S %p")
+                        # add current year since it's missing
+                        current_year = datetime.datetime.now().year
+                        timestamp = timestamp.replace(year=current_year)
+                    except:
+                        pass
 
-        formatted_results.append("")  # empty line between frames
+            # format the timestamp
+            time_str = timestamp.strftime('%Y-%m-%d %H:%M:%S') if timestamp else "Unknown time"
+
+            # get application and window info
+            app_str = ""
+            if 'application' in item and item['application'] and 'window' in item and item['window']:
+                app_str = f"{item['application']} - {item['window']}"
+            elif 'window_info' in item and item['window_info']:
+                app_str = str(item['window_info'])
+            else:
+                app_str = "Unknown application"
+
+            # add the formatted result
+            formatted_results.append(f"[{time_str}] Screen Match in {app_str}")
+
+            # add the text content with more context
+            text_content = item['text']
+            formatted_results.append(f"  Text: {text_content}")
+
+            # construct recording path based on content ID
+            if 'content_id' in item and item['content_id']:
+                content_id = item['content_id']
+
+                # Query the database to get the frame.createdAt for this content_id
+                try:
+                    # First, check if we have a direct connection to the database
+                    if hasattr(db, 'cursor') and db.cursor:
+                        # Use the existing database connection
+                        cursor = db.cursor
+                    else:
+                        # Create a new connection
+                        from rewinddb.config import get_db_path, get_db_password
+                        import pysqlcipher3.dbapi2 as sqlite3
+
+                        db_path = get_db_path()
+                        db_password = get_db_password()
+
+                        conn = sqlite3.connect(db_path)
+                        cursor = conn.cursor()
+
+                        # Configure the connection for the encrypted database
+                        cursor.execute(f"PRAGMA key = '{db_password}'")
+                        cursor.execute("PRAGMA cipher_compatibility = 4")
+
+                    # Query the frame table to get the createdAt timestamp for this content_id
+                    cursor.execute("""
+                        SELECT
+                            createdAt
+                        FROM
+                            frame
+                        WHERE
+                            id = ?
+                    """, (content_id,))
+
+                    result = cursor.fetchone()
+                    if result:
+                        created_at = result[0]
+
+                        # Parse the timestamp
+                        if isinstance(created_at, int):
+                            # Convert milliseconds to datetime
+                            frame_time = datetime.datetime.fromtimestamp(created_at / 1000)
+                        else:
+                            # Parse ISO format
+                            try:
+                                frame_time = datetime.datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%S.%f")
+                            except ValueError:
+                                frame_time = datetime.datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%S")
+
+                        # Construct recording path
+                        year_month = frame_time.strftime("%Y%m")
+                        day = frame_time.strftime("%d")
+                        recording_path = f"~/Library/Application Support/com.memoryvault.MemoryVault/chunks/{year_month}/{day}"
+
+                        formatted_results.append(f"  Recording path: {recording_path}")
+                        formatted_results.append(f"  Timestamp: {frame_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                    else:
+                        # If no timestamp found, use the content_id to provide a hint
+                        formatted_results.append(f"  Content ID: {content_id}")
+                        formatted_results.append("  Note: This content ID could not be linked to a frame timestamp")
+                except Exception as e:
+                    # Fallback if there's an error
+                    formatted_results.append(f"  Content ID: {content_id}")
+                    formatted_results.append(f"  Note: Error retrieving frame timestamp: {e}")
+
+            formatted_results.append("")  # empty line between results
+
+        # handle results from traditional search
+        elif 'frame_id' in item and 'frame_time' in item:
+            if item['frame_time']:
+                time_str = item['frame_time'].strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                time_str = "Unknown time"
+
+            app_str = "Unknown application"
+            if 'application' in item and item['application'] and 'window' in item and item['window']:
+                app_str = f"{item['application']} - {item['window']}"
+
+            formatted_results.append(f"[{time_str}] Screen Match in {app_str}")
+
+            # construct recording path based on frame ID
+            if 'frame_id' in item and item['frame_time']:
+                frame_id = item['frame_id']
+                timestamp = item['frame_time']
+
+                # Construct recording path
+                year_month = timestamp.strftime("%Y%m")
+                day = timestamp.strftime("%d")
+                recording_path = f"~/Library/Application Support/com.memoryvault.MemoryVault/chunks/{year_month}/{day}"
+
+                formatted_results.append(f"  Recording path: {recording_path}")
+                formatted_results.append(f"  Timestamp: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+            elif 'frame_id' in item:
+                # Fallback if timestamp is not available
+                formatted_results.append(f"  Frame ID: {item['frame_id']}")
+                formatted_results.append("  Note: No timestamp available for this frame")
+
+            formatted_results.append("")  # empty line between results
 
     return "\n".join(formatted_results)
 
@@ -312,19 +455,23 @@ def parse_arguments():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 examples:
-  %(prog)s --keyword "meeting"
-  %(prog)s --keyword "project" --from "2023-05-11 13:00:00" --to "2023-05-11 17:00:00"
-  %(prog)s --keyword "project" --from "13:00:00" --to "17:00:00"  # uses today's date
-  %(prog)s --keyword "presentation" --relative "1 day"
-  %(prog)s --keyword "python" --context 5 --debug
-  %(prog)s --keyword "meeting" --env-file /path/to/.env
+  %(prog)s "meeting"
+  %(prog)s "project" --from "2023-05-11 13:00:00" --to "2023-05-11 17:00:00"
+  %(prog)s "project" --from "13:00:00" --to "17:00:00"  # uses today's date
+  %(prog)s "presentation" --relative "1 day"
+  %(prog)s "meeting" --relative "5h"
+  %(prog)s "code" --relative "3m"
+  %(prog)s "project" --relative "10d"
+  %(prog)s "design" --relative "2w"
+  %(prog)s "python" --context 5 --debug
+  %(prog)s "meeting" --env-file /path/to/.env
 """
     )
 
-    parser.add_argument("--keyword", required=True, help="keyword to search for")
+    parser.add_argument("keyword", help="keyword to search for")
 
     time_group = parser.add_mutually_exclusive_group()
-    time_group.add_argument("--relative", metavar="TIME", help="relative time period (e.g., '1 hour', '5 hours')")
+    time_group.add_argument("-r", "--relative", metavar="TIME", help="relative time period (e.g., '1 hour', '5h', '3m', '10d', '2w')")
     time_group.add_argument("--from", dest="from_time", metavar="DATETIME",
                            help="start time in format 'YYYY-MM-DD HH:MM:SS' or 'HH:MM:SS' (uses today's date)")
 
@@ -366,9 +513,9 @@ def main():
                 results = search_with_absolute_time(db, args.keyword, args.from_time,
                                                   args.to_time, args.debug)
             else:
-                # default to 7 days if no time range specified
-                print(f"searching for '{args.keyword}' in the last 7 days...")
-                results = db.search(args.keyword, days=7)
+                # default to 120 days if no time range specified
+                print(f"searching for '{args.keyword}' in the last 120 days...")
+                results = db.search(args.keyword, days=120)
 
             # format and display results
             audio_results = results['audio']

@@ -20,6 +20,30 @@ pragma key = 'your_password_here';
 pragma cipher_compatibility = 4;
 ```
 
+## File Locations
+
+### Database File
+The main database file is located at:
+```
+~/Library/Application Support/com.memoryvault.MemoryVault/db-enc.sqlite3
+```
+
+### Audio Snippets
+Audio recordings are stored as snippets at:
+```
+~/Library/Application Support/com.memoryvault.MemoryVault/snippets/YYYY-MM-DDThh:mm:ss/snippet.m4a
+```
+
+### Screen Recordings
+Screen recordings are stored as chunks at:
+```
+~/Library/Application Support/com.memoryvault.MemoryVault/chunks/YYYYMM/DD/[chunk_id]
+```
+Where:
+- YYYYMM is the year and month (e.g., 202505 for May 2025)
+- DD is the day (e.g., 13 for the 13th)
+- [chunk_id] is a unique identifier for the recording chunk
+
 ## Main Tables
 
 ### Audio
@@ -32,6 +56,7 @@ Stores information about audio recording segments.
 | startTime | integer/text | timestamp when recording started (ms since epoch or iso format) |
 | duration | integer | duration in milliseconds |
 | segmentId | integer | foreign key to segment table |
+| path | text | path to the audio file |
 
 ### Transcript_Word
 
@@ -44,6 +69,8 @@ Stores individual words from audio transcriptions.
 | word | text | the transcribed word |
 | timeOffset | integer | offset in milliseconds from audio segment start |
 | duration | integer | duration of the word in milliseconds |
+| speechSource | text | source of the speech |
+| fullTextOffset | integer | offset in the full text |
 
 ### Frame
 
@@ -54,6 +81,11 @@ Stores information about screen capture frames.
 | id | integer | primary key |
 | createdAt | integer/text | timestamp when frame was captured (ms since epoch or iso format) |
 | segmentId | integer | foreign key to segment table |
+| imageFileName | text | name of the image file |
+| videoId | integer | foreign key to video table |
+| videoFrameIndex | integer | index of the frame in the video |
+| isStarred | integer | whether the frame is starred (0 or 1) |
+| encodingStatus | text | status of the encoding process |
 
 ### Node
 
@@ -63,8 +95,14 @@ Stores text elements extracted from screen captures.
 |--------|------|-------------|
 | id | integer | primary key |
 | frameId | integer | foreign key to frame table |
+| nodeOrder | integer | order of the node in the frame |
 | textOffset | integer | offset in the text content |
 | textLength | integer | length of the text content |
+| leftX | real | left X coordinate of the text element |
+| topY | real | top Y coordinate of the text element |
+| width | real | width of the text element |
+| height | real | height of the text element |
+| windowIndex | integer | index of the window containing the text |
 
 ### Segment
 
@@ -75,23 +113,56 @@ Stores information about application/window usage segments.
 | id | integer | primary key |
 | bundleID | text | application bundle identifier |
 | windowName | text | window title |
-| startTime | integer/text | timestamp when segment started |
-| endTime | integer/text | timestamp when segment ended |
+| startDate | text | timestamp when segment started |
+| endDate | text | timestamp when segment ended |
+| browserUrl | text | URL if the segment is a browser |
+| browserProfile | text | browser profile if applicable |
+| type | integer | type of segment |
+
+### SearchRanking_Content
+
+Stores OCR text content for searching.
+
+| column | type | description |
+|--------|------|-------------|
+| id | integer | primary key |
+| c0 | text | main text content extracted from screen |
+| c1 | text | timestamp information |
+| c2 | text | window/application information |
 
 ## Relationships
 
-```
-Segment
-  ↑
-  | one-to-many
-  |
-Audio ← one-to-many → Transcript_Word
+```graphviz
+digraph RewindDB {
+    rankdir=LR;
+    node [shape=box, style=filled, fillcolor=lightblue];
 
-Segment
-  ↑
-  | one-to-many
-  |
-Frame ← one-to-many → Node
+    Segment -> Audio [label="1:N"];
+    Segment -> Frame [label="1:N"];
+    Audio -> Transcript_Word [label="1:N"];
+    Frame -> Node [label="1:N"];
+    Frame -> SearchRanking_Content [label="1:1", style=dashed];
+    Event -> Segment [label="N:1"];
+    Video -> Frame [label="1:N"];
+
+    subgraph cluster_audio {
+        label="Audio Processing";
+        style=filled;
+        fillcolor=lightyellow;
+        Audio;
+        Transcript_Word;
+    }
+
+    subgraph cluster_screen {
+        label="Screen Processing";
+        style=filled;
+        fillcolor=lightgreen;
+        Frame;
+        Node;
+        SearchRanking_Content;
+        Video;
+    }
+}
 ```
 
 ## Timestamp Formats
@@ -351,11 +422,13 @@ CREATE TABLE searchRanking_config (
 ```sql
 CREATE TABLE searchRanking_content (
     id INTEGER PRIMARY KEY,
-    c0 TEXT,
-    c1 TEXT,
-    c2 TEXT
+    c0 TEXT,  -- Main text content extracted from screen
+    c1 TEXT,  -- Timestamp information
+    c2 TEXT   -- Window/application information
 );
 ```
+
+This table is crucial for screen content search functionality. It stores the actual OCR text content extracted from screen captures, along with metadata about when and where the content was captured. The `id` field can be used to locate the corresponding recording chunk in the filesystem.
 
 ### SearchRanking_Data
 ```sql

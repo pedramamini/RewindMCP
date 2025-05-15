@@ -13,12 +13,16 @@ call flow:
 6. close database connection
 
 the cli supports two main query modes:
-- relative time queries (e.g., "1 hour", "5 hours", "30 minutes")
+- relative time queries (e.g., "1 hour", "5h", "30m", "2d", "1w")
 - specific time range queries with --from and --to timestamps
 
 examples:
   python transcript_cli.py --relative "1 hour"
   python transcript_cli.py --relative "5 hours"
+  python transcript_cli.py --relative "5h"
+  python transcript_cli.py --relative "30m"
+  python transcript_cli.py --relative "2d"
+  python transcript_cli.py --relative "1w"
   python transcript_cli.py --from "2023-05-11 13:00:00" --to "2023-05-11 17:00:00"
 """
 
@@ -35,7 +39,7 @@ def parse_relative_time(time_str):
     """parse a relative time string into timedelta components.
 
     args:
-        time_str: string like "1 hour", "5 hours", "30 minutes"
+        time_str: string like "1 hour", "5 hours", "30 minutes" or short form "5h", "3m", "10d", "2w"
 
     returns:
         dict with keys for days, hours, minutes, seconds
@@ -47,12 +51,31 @@ def parse_relative_time(time_str):
     time_str = time_str.lower().strip()
     time_components = {"days": 0, "hours": 0, "minutes": 0, "seconds": 0}
 
-    # regex patterns for different time units
+    # short form pattern (e.g., "5h", "3m", "10d", "2w")
+    short_patterns = {
+        r"^(\d+)w$": lambda x: {"days": int(x) * 7},
+        r"^(\d+)d$": lambda x: {"days": int(x)},
+        r"^(\d+)h$": lambda x: {"hours": int(x)},
+        r"^(\d+)m$": lambda x: {"minutes": int(x)},
+        r"^(\d+)s$": lambda x: {"seconds": int(x)}
+    }
+
+    # check for short form patterns first
+    for pattern, handler in short_patterns.items():
+        match = re.search(pattern, time_str)
+        if match:
+            component_values = handler(match.group(1))
+            for component, value in component_values.items():
+                time_components[component] = value
+            return time_components
+
+    # long form patterns
     patterns = {
         r"(\d+)\s*(?:day|days)": "days",
         r"(\d+)\s*(?:hour|hours|hr|hrs)": "hours",
         r"(\d+)\s*(?:minute|minutes|min|mins)": "minutes",
-        r"(\d+)\s*(?:second|seconds|sec|secs)": "seconds"
+        r"(\d+)\s*(?:second|seconds|sec|secs)": "seconds",
+        r"(\d+)\s*(?:week|weeks)": "weeks"
     }
 
     # try to match each pattern
@@ -60,11 +83,14 @@ def parse_relative_time(time_str):
     for pattern, component in patterns.items():
         match = re.search(pattern, time_str)
         if match:
-            time_components[component] = int(match.group(1))
+            if component == "weeks":
+                time_components["days"] += int(match.group(1)) * 7
+            else:
+                time_components[component] = int(match.group(1))
             found_match = True
 
     if not found_match:
-        raise ValueError(f"invalid time format: {time_str}. use format like '1 hour', '5 hours', '30 minutes'.")
+        raise ValueError(f"invalid time format: {time_str}. use format like '1 hour', '5h', '30m', '2d', '1w'.")
 
     return time_components
 
@@ -139,6 +165,10 @@ def parse_arguments():
 examples:
   %(prog)s --relative "1 hour"
   %(prog)s --relative "5 hours"
+  %(prog)s --relative "5h"
+  %(prog)s --relative "30m"
+  %(prog)s --relative "2d"
+  %(prog)s --relative "1w"
   %(prog)s --from "2023-05-11 13:00:00" --to "2023-05-11 17:00:00"
   %(prog)s --from "2023-05-11" --to "2023-05-12"  # uses 00:00:00 and 23:59:59
   %(prog)s --from "13:00:00" --to "17:00:00"  # uses today's date
@@ -148,7 +178,7 @@ examples:
     )
 
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--relative", metavar="TIME", help="relative time period (e.g., '1 hour', '5 hours')")
+    group.add_argument("-r", "--relative", metavar="TIME", help="relative time period (e.g., '1 hour', '5h', '3m', '10d', '2w')")
     group.add_argument("--from", dest="from_time", metavar="DATETIME",
                        help="start time in format 'YYYY-MM-DD HH:MM:SS', 'YYYY-MM-DD' (uses 00:00:00), or 'HH:MM:SS' (uses today's date)")
 

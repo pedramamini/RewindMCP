@@ -72,7 +72,7 @@ db = rewinddb.RewindDB(env_file="/path/to/custom/.env")
 ```bash
 # with cli tools
 python transcript_cli.py --relative "1 hour" --env-file /path/to/custom/.env
-python search_cli.py --keyword "meeting" --env-file /path/to/custom/.env
+python search_cli.py "meeting" --env-file /path/to/custom/.env
 ```
 
 ```bash
@@ -179,19 +179,19 @@ Search for keywords across both audio transcripts and screen OCR data.
 
 ```bash
 # search for a keyword with default time range (7 days)
-python search_cli.py --keyword "meeting"
+python search_cli.py "meeting"
 
 # search with a specific time range
-python search_cli.py --keyword "project" --from "2023-05-11 13:00:00" --to "2023-05-11 17:00:00"
+python search_cli.py "project" --from "2023-05-11 13:00:00" --to "2023-05-11 17:00:00"
 
 # search with a relative time period
-python search_cli.py --keyword "presentation" --relative "1 day"
+python search_cli.py "presentation" --relative "1 day"
 
 # adjust context size and enable debug output
-python search_cli.py --keyword "python" --context 5 --debug
+python search_cli.py "python" --context 5 --debug
 
 # use a custom .env file
-python search_cli.py --keyword "meeting" --env-file /path/to/custom/.env
+python search_cli.py "meeting" --env-file /path/to/custom/.env
 ```
 
 ## MCP Server
@@ -252,11 +252,17 @@ The Rewind.ai database contains several key tables:
 - `node`: Contains text elements extracted from screen captures (OCR)
 - `segment`: Tracks application and window usage sessions
 - `event`: Stores calendar events and meetings
+- `searchRanking_content`: Stores OCR text content for searching
 
 ### Data Types Explained
 
 #### Audio Recordings
 Audio recordings are captured by Rewind.ai when you speak or when there's audio playing on your computer. Each recording is stored as a segment in the `audio` table with metadata like start time and duration. These recordings are then processed to extract transcribed words.
+
+Audio snippets are stored on disk at:
+```
+~/Library/Application Support/com.memoryvault.MemoryVault/snippets/YYYY-MM-DDThh:mm:ss/snippet.m4a
+```
 
 #### Transcript Words
 Individual words extracted from audio recordings through speech recognition. Each word in the `transcript_word` table includes information about when it occurred within the audio recording (timeOffset), its position in the full text (fullTextOffset), and its duration. Transcript words are linked to their source audio recording.
@@ -264,8 +270,26 @@ Individual words extracted from audio recordings through speech recognition. Eac
 #### Frames
 Screenshots captured by Rewind.ai at regular intervals as you use your computer. Each frame in the `frame` table includes a timestamp (createdAt) and is linked to the application segment it belongs to. Frames are the visual equivalent of audio recordings, capturing what was on your screen at specific moments.
 
+Screen recordings are stored on disk as chunks at:
+```
+~/Library/Application Support/com.memoryvault.MemoryVault/chunks/YYYYMM/DD/[chunk_id]
+```
+Where:
+- YYYYMM is the year and month (e.g., 202505 for May 2025)
+- DD is the day (e.g., 13 for the 13th)
+- [chunk_id] is a unique identifier for the recording chunk
+
 #### Nodes
 Text elements extracted from screen captures using Optical Character Recognition (OCR). Each node in the `node` table represents a piece of text visible on your screen, including its position (leftX, topY, width, height) and other metadata. Nodes are linked to the frame they were extracted from. They are the visual equivalent of transcript words.
+
+#### SearchRanking_Content
+This table stores the actual OCR text content extracted from screen captures. It contains three columns:
+- `id`: A unique identifier that can be used to locate the corresponding recording chunk
+- `c0`: The main text content extracted from the screen
+- `c1`: Timestamp information
+- `c2`: Window/application information
+
+This table is crucial for searching through screen content.
 
 #### Segments
 Application usage sessions that track when you were using specific applications and windows. Each segment in the `segment` table includes the application bundle ID, window name, start time, and end time. Segments help organize frames and audio recordings by the application context they occurred in.
@@ -278,6 +302,7 @@ Key relationships:
 - Frames are linked to nodes (text elements)
 - Frames and audio segments are associated with application segments
 - Events may be associated with specific segments
+- SearchRanking_content entries are linked to frames and contain the actual OCR text
 
 ## Development
 
