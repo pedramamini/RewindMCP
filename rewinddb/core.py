@@ -1472,3 +1472,192 @@ class RewindDB:
         """
 
         self.close()
+
+    def get_screenshot_by_id(self, frame_id: int) -> typing.Optional[dict]:
+        """retrieve a screenshot by frame id.
+
+        queries the frame table to get a specific screenshot by its id.
+
+        args:
+            frame_id: the id of the frame to retrieve
+
+        returns:
+            a dictionary containing screenshot data or none if not found
+        """
+
+        try:
+            # query the frame table for the specified id
+            query = """
+            SELECT
+                f.id as frame_id,
+                f.createdAt as created_at,
+                f.segmentId as segment_id,
+                f.imageFileName as image_file,
+                s.bundleID as app_name,
+                s.windowName as window_name
+            FROM
+                frame f
+            LEFT JOIN
+                segment s ON f.segmentId = s.id
+            WHERE
+                f.id = ?
+            """
+
+            self.cursor.execute(query, (frame_id,))
+            row = self.cursor.fetchone()
+
+            if not row:
+                return None
+
+            # parse the timestamp
+            if isinstance(row[1], str):
+                try:
+                    frame_time = datetime.datetime.strptime(row[1], "%Y-%m-%dT%H:%M:%S.%f")
+                except ValueError:
+                    # try without microseconds
+                    frame_time = datetime.datetime.strptime(row[1], "%Y-%m-%dT%H:%M:%S")
+            else:
+                # use the existing _ms_to_datetime method
+                frame_time = self._ms_to_datetime(row[1])
+
+            # construct the result
+            result = {
+                'frame_id': row[0],
+                'frame_time': frame_time,
+                'segment_id': row[2],
+                'image_file': row[3],
+                'application': row[4],
+                'window': row[5]
+            }
+
+            return result
+
+        except Exception as e:
+            logger.error(f"error in get_screenshot_by_id: {e}")
+            return None
+
+    def get_screenshots_absolute(self, start_time: datetime.datetime,
+                               end_time: datetime.datetime,
+                               limit: int = 100) -> typing.List[dict]:
+        """retrieve screenshots within an absolute time range.
+
+        queries the frame table to get screenshots within the specified absolute time range.
+
+        args:
+            start_time: the start datetime to query from
+            end_time: the end datetime to query to
+            limit: maximum number of screenshots to return (default: 100)
+
+        returns:
+            a list of dictionaries containing screenshot data
+        """
+
+        # try both timestamp formats
+        try:
+            # first try with millisecond timestamps
+            start_timestamp = int(start_time.timestamp() * 1000)  # convert to milliseconds
+            end_timestamp = int(end_time.timestamp() * 1000)  # convert to milliseconds
+
+            query = """
+            SELECT
+                f.id as frame_id,
+                f.createdAt as created_at,
+                f.segmentId as segment_id,
+                f.imageFileName as image_file,
+                s.bundleID as app_name,
+                s.windowName as window_name
+            FROM
+                frame f
+            LEFT JOIN
+                segment s ON f.segmentId = s.id
+            WHERE
+                f.createdAt BETWEEN ? AND ?
+            ORDER BY
+                f.createdAt DESC
+            LIMIT ?
+            """
+
+            self.cursor.execute(query, (start_timestamp, end_timestamp, limit))
+            rows = self.cursor.fetchall()
+
+            # if no results, try with string-formatted timestamps
+            if not rows:
+                # format timestamps as strings
+                start_timestamp = start_time.strftime("%Y-%m-%dT%H:%M:%S.000")
+                end_timestamp = end_time.strftime("%Y-%m-%dT%H:%M:%S.999")
+
+                query = """
+                SELECT
+                    f.id as frame_id,
+                    f.createdAt as created_at,
+                    f.segmentId as segment_id,
+                    f.imageFileName as image_file,
+                    s.bundleID as app_name,
+                    s.windowName as window_name
+                FROM
+                    frame f
+                LEFT JOIN
+                    segment s ON f.segmentId = s.id
+                WHERE
+                    f.createdAt BETWEEN ? AND ?
+                ORDER BY
+                    f.createdAt DESC
+                LIMIT ?
+                """
+
+                self.cursor.execute(query, (start_timestamp, end_timestamp, limit))
+                rows = self.cursor.fetchall()
+
+            results = []
+            for row in rows:
+                # check if the timestamp is a string or an integer
+                if isinstance(row[1], str):
+                    # parse the timestamp from the text format
+                    try:
+                        frame_time = datetime.datetime.strptime(row[1], "%Y-%m-%dT%H:%M:%S.%f")
+                    except ValueError:
+                        # try without microseconds
+                        frame_time = datetime.datetime.strptime(row[1], "%Y-%m-%dT%H:%M:%S")
+                else:
+                    # use the existing _ms_to_datetime method
+                    frame_time = self._ms_to_datetime(row[1])
+
+                results.append({
+                    'frame_id': row[0],
+                    'frame_time': frame_time,
+                    'segment_id': row[2],
+                    'image_file': row[3],
+                    'application': row[4],
+                    'window': row[5]
+                })
+
+            return results
+
+        except Exception as e:
+            logger.error(f"error in get_screenshots_absolute: {e}")
+            return []
+
+    def get_screenshots_relative(self, days: int = 0, hours: int = 0,
+                               minutes: int = 0, seconds: int = 0,
+                               limit: int = 100) -> typing.List[dict]:
+        """retrieve screenshots from a relative time period.
+
+        queries screenshots from a time period relative to now.
+
+        args:
+            days: number of days to look back
+            hours: number of hours to look back
+            minutes: number of minutes to look back
+            seconds: number of seconds to look back
+            limit: maximum number of screenshots to return (default: 100)
+
+        returns:
+            a list of dictionaries containing screenshot data
+        """
+
+        # use utc timezone to be consistent with get_statistics
+        now = datetime.datetime.now(datetime.timezone.utc)
+        delta = datetime.timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+        start_time = now - delta
+
+        return self.get_screenshots_absolute(start_time, now, limit)

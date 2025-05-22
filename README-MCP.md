@@ -87,6 +87,54 @@ Retrieve audio transcripts from a specific time range.
 }
 ```
 
+### get_screenshot
+
+Retrieve a single screenshot by frame ID.
+
+**Parameters:**
+- `frame_id`: ID of the screenshot frame to retrieve
+
+**example request:**
+```json
+{
+  "frame_id": "12345678-1234-5678-abcd-1234567890ab"
+}
+```
+
+### get_screenshots_relative
+
+Retrieve screenshots from a relative time period.
+
+**Parameters:**
+- `time_period`: Relative time period (e.g., '1hour', '30minutes', '1day')
+- `limit`: (Optional) Maximum number of screenshots to return
+
+**example request:**
+```json
+{
+  "time_period": "1hour",
+  "limit": 10
+}
+```
+
+### get_screenshots_absolute
+
+Retrieve screenshots from a specific time range.
+
+**Parameters:**
+- `from`: Start time in ISO format
+- `to`: End time in ISO format
+- `limit`: (Optional) Maximum number of screenshots to return
+
+**example request:**
+```json
+{
+  "from": "2023-05-11T13:00:00",
+  "to": "2023-05-11T17:00:00",
+  "limit": 20
+}
+```
+
 ### search
 
 Search for keywords across both audio and screen data.
@@ -145,6 +193,30 @@ curl -X POST "http://localhost:8000/mcp/tools/get_transcripts_absolute" \
 curl -X POST "http://localhost:8000/mcp/tools/search" \
   -H "Content-Type: application/json" \
   -d '{"keyword": "meeting", "relative": "1day"}'
+```
+
+### Get a Single Screenshot by Frame ID
+
+```bash
+curl -X POST "http://localhost:8000/mcp/tools/get_screenshot" \
+  -H "Content-Type: application/json" \
+  -d '{"frame_id": "12345678-1234-5678-abcd-1234567890ab"}'
+```
+
+### Get Screenshots from the Last Hour
+
+```bash
+curl -X POST "http://localhost:8000/mcp/tools/get_screenshots_relative" \
+  -H "Content-Type: application/json" \
+  -d '{"time_period": "1hour", "limit": 10}'
+```
+
+### Get Screenshots from a Specific Time Range
+
+```bash
+curl -X POST "http://localhost:8000/mcp/tools/get_screenshots_absolute" \
+  -H "Content-Type: application/json" \
+  -d '{"from": "2023-05-11T13:00:00", "to": "2023-05-11T17:00:00", "limit": 20}'
 ```
 
 ## Integration with GenAI Models

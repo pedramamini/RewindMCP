@@ -38,10 +38,12 @@ import re
 import sys
 import json
 import time
+import base64
 import typing
 import logging
 import datetime
 import argparse
+from pathlib import Path
 
 import fastapi
 import uvicorn
@@ -49,7 +51,7 @@ import pydantic
 from fastapi import FastAPI, HTTPException, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 import rewinddb
 import rewinddb.utils
@@ -70,7 +72,7 @@ class RelativeTimeParams(BaseModel):
 
     time_period: str = Field(..., description="relative time period (e.g., '1hour', '30minutes', '1day')")
 
-    @validator("time_period")
+    @field_validator("time_period")
     def validate_time_period(cls, v):
         """validate the time period format."""
 
@@ -87,7 +89,7 @@ class AbsoluteTimeParams(BaseModel):
     to_time: datetime.datetime = Field(..., alias="to", description="end time in ISO format")
 
     class Config:
-        allow_population_by_field_name = True
+        populate_by_name = True
 
 
 class SearchParams(BaseModel):
@@ -98,7 +100,7 @@ class SearchParams(BaseModel):
     from_time: typing.Optional[datetime.datetime] = Field(None, alias="from", description="start time in ISO format")
     to_time: typing.Optional[datetime.datetime] = Field(None, alias="to", description="end time in ISO format")
 
-    @validator("relative")
+    @field_validator("relative")
     def validate_relative(cls, v):
         """validate the relative time format."""
 
@@ -108,7 +110,7 @@ class SearchParams(BaseModel):
                 raise ValueError("relative must be in format like '1hour', '30minutes', '1day'")
         return v
 
-    @validator("to_time")
+    @field_validator("to_time")
     def validate_time_range(cls, v, values):
         """validate that if from_time is provided, to_time is also provided."""
 
@@ -117,7 +119,56 @@ class SearchParams(BaseModel):
         return v
 
     class Config:
-        allow_population_by_field_name = True
+        populate_by_name = True
+
+
+class ScreenshotByIdParams(BaseModel):
+    """parameters for retrieving a screenshot by id."""
+
+    frame_id: int = Field(..., description="id of the screenshot frame to retrieve")
+
+
+class ScreenshotsRelativeParams(BaseModel):
+    """parameters for relative time screenshot retrieval."""
+
+    time_period: str = Field(..., description="relative time period (e.g., '1hour', '30minutes', '1day')")
+    limit: typing.Optional[int] = Field(100, description="maximum number of screenshots to return")
+
+    @field_validator("time_period")
+    def validate_time_period(cls, v):
+        """validate the time period format."""
+
+        pattern = r"^(\d+)(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
+        if not re.match(pattern, v):
+            raise ValueError("time_period must be in format like '1hour', '30minutes', '1day'")
+        return v
+
+    @field_validator("limit")
+    def validate_limit(cls, v):
+        """validate the limit value."""
+
+        if v is not None and (v < 1 or v > 1000):
+            raise ValueError("limit must be between 1 and 1000")
+        return v
+
+
+class ScreenshotsAbsoluteParams(BaseModel):
+    """parameters for absolute time screenshot retrieval."""
+
+    from_time: datetime.datetime = Field(..., alias="from", description="start time in ISO format")
+    to_time: datetime.datetime = Field(..., alias="to", description="end time in ISO format")
+    limit: typing.Optional[int] = Field(100, description="maximum number of screenshots to return")
+
+    @field_validator("limit")
+    def validate_limit(cls, v):
+        """validate the limit value."""
+
+        if v is not None and (v < 1 or v > 1000):
+            raise ValueError("limit must be between 1 and 1000")
+        return v
+
+    class Config:
+        populate_by_name = True
 
 
 def parse_relative_time(time_str):
@@ -238,6 +289,64 @@ class MCPServer:
                         }
                     },
                     {
+                        "name": "get_screenshot",
+                        "description": "Get a single screenshot by frame ID",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "frame_id": {
+                                    "type": "integer",
+                                    "description": "ID of the screenshot frame to retrieve"
+                                }
+                            },
+                            "required": ["frame_id"]
+                        }
+                    },
+                    {
+                        "name": "get_screenshots_relative",
+                        "description": "Get screenshots from a relative time period",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "time_period": {
+                                    "type": "string",
+                                    "description": "Relative time period (e.g., '1hour', '30minutes', '1day')"
+                                },
+                                "limit": {
+                                    "type": "integer",
+                                    "description": "Maximum number of screenshots to return",
+                                    "default": 100
+                                }
+                            },
+                            "required": ["time_period"]
+                        }
+                    },
+                    {
+                        "name": "get_screenshots_absolute",
+                        "description": "Get screenshots from a specific time range",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "from": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "description": "Start time in ISO format"
+                                },
+                                "to": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "description": "End time in ISO format"
+                                },
+                                "limit": {
+                                    "type": "integer",
+                                    "description": "Maximum number of screenshots to return",
+                                    "default": 100
+                                }
+                            },
+                            "required": ["from", "to"]
+                        }
+                    },
+                    {
                         "name": "search",
                         "description": "Search for keywords across both audio and screen data",
                         "input_schema": {
@@ -307,8 +416,11 @@ class MCPServer:
                 try:
                     transcripts = self.db.get_audio_transcripts_relative(**time_components)
                     return self.format_transcripts(transcripts)
+                except HTTPException:
+                    # Re-raise HTTP exceptions without wrapping them
+                    raise
                 except Exception as e:
-                    logger.error(f"error getting transcripts: {e}")
+                    logger.error(f"error getting transcripts: {e}", exc_info=True)
                     raise HTTPException(status_code=500, detail=f"error getting transcripts: {str(e)}")
 
             elif tool_name == "get_transcripts_absolute":
@@ -324,8 +436,11 @@ class MCPServer:
                         params.from_time, params.to_time
                     )
                     return self.format_transcripts(transcripts)
+                except HTTPException:
+                    # Re-raise HTTP exceptions without wrapping them
+                    raise
                 except Exception as e:
-                    logger.error(f"error getting transcripts: {e}")
+                    logger.error(f"error getting transcripts: {e}", exc_info=True)
                     raise HTTPException(status_code=500, detail=f"error getting transcripts: {str(e)}")
 
             elif tool_name == "search":
@@ -379,9 +494,78 @@ class MCPServer:
                         results = self.db.search(params.keyword)
 
                     return self.format_search_results(results)
+                except HTTPException:
+                    # Re-raise HTTP exceptions without wrapping them
+                    raise
                 except Exception as e:
-                    logger.error(f"error searching: {e}")
+                    logger.error(f"error searching: {e}", exc_info=True)
                     raise HTTPException(status_code=500, detail=f"error searching: {str(e)}")
+
+            elif tool_name == "get_screenshot":
+                # validate parameters
+                try:
+                    params = ScreenshotByIdParams(**body)
+                except pydantic.ValidationError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+
+                # get screenshot
+                try:
+                    screenshot = self.db.get_screenshot_by_id(params.frame_id)
+                    if not screenshot:
+                        logger.warning(f"screenshot with id {params.frame_id} not found")
+                        raise HTTPException(status_code=404, detail=f"screenshot with id {params.frame_id} not found")
+
+                    return self.format_screenshot(screenshot)
+                except HTTPException:
+                    # Re-raise HTTP exceptions (like 404) without wrapping them
+                    raise
+                except Exception as e:
+                    logger.error(f"error getting screenshot: {e}", exc_info=True)
+                    raise HTTPException(status_code=500, detail=f"error getting screenshot: {str(e)}")
+
+            elif tool_name == "get_screenshots_relative":
+                # validate parameters
+                try:
+                    params = ScreenshotsRelativeParams(**body)
+                except pydantic.ValidationError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+
+                # parse relative time
+                try:
+                    time_components = parse_relative_time(params.time_period)
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+
+                # get screenshots
+                try:
+                    screenshots = self.db.get_screenshots_relative(**time_components, limit=params.limit)
+                    return self.format_screenshots(screenshots)
+                except HTTPException:
+                    # Re-raise HTTP exceptions without wrapping them
+                    raise
+                except Exception as e:
+                    logger.error(f"error getting screenshots: {e}", exc_info=True)
+                    raise HTTPException(status_code=500, detail=f"error getting screenshots: {str(e)}")
+
+            elif tool_name == "get_screenshots_absolute":
+                # validate parameters
+                try:
+                    params = ScreenshotsAbsoluteParams(**body)
+                except pydantic.ValidationError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+
+                # get screenshots
+                try:
+                    screenshots = self.db.get_screenshots_absolute(
+                        params.from_time, params.to_time, limit=params.limit
+                    )
+                    return self.format_screenshots(screenshots)
+                except HTTPException:
+                    # Re-raise HTTP exceptions without wrapping them
+                    raise
+                except Exception as e:
+                    logger.error(f"error getting screenshots: {e}", exc_info=True)
+                    raise HTTPException(status_code=500, detail=f"error getting screenshots: {str(e)}")
 
             else:
                 raise HTTPException(status_code=404, detail=f"tool '{tool_name}' not found")
@@ -450,7 +634,7 @@ class MCPServer:
                     {
                         'word': word['word'],
                         'time': (session['start_time'] + datetime.timedelta(milliseconds=word['time_offset'])).isoformat(),
-                        'confidence': word['confidence']
+                        'duration': word.get('duration', 0)
                     }
                     for word in words
                 ]
@@ -533,8 +717,11 @@ class MCPServer:
 
             # format each frame
             for frame_id, frame in frames.items():
+                # ensure frame time is not None before calling isoformat()
+                frame_time = frame['time'].isoformat() if frame['time'] else None
+
                 formatted_results['screen'].append({
-                    'time': frame['time'].isoformat(),
+                    'time': frame_time,
                     'application': frame['application'],
                     'window': frame['window'],
                     'text': '\n'.join(frame['texts']),
@@ -542,6 +729,150 @@ class MCPServer:
                 })
 
         return formatted_results
+
+    def get_image_path(self, image_file: str) -> typing.Optional[str]:
+        """get the full path to an image file.
+
+        args:
+            image_file: the image file name from the database
+
+        returns:
+            the full path to the image file or none if not found
+        """
+
+        # check if the image file is a valid path
+        if not image_file:
+            return None
+
+        # get the rewind data directory from the database path
+        db_path = self.db.db_path
+        data_dir = os.path.dirname(os.path.dirname(db_path))
+
+        # construct the path to the image file
+        # image files are stored in chunks directory with a specific structure
+        # the exact path depends on the image_file format
+
+        # try different possible locations
+        possible_paths = [
+            # direct path if image_file is a full path
+            image_file,
+            # path relative to data directory
+            os.path.join(data_dir, image_file),
+            # path in chunks directory
+            os.path.join(data_dir, "chunks", image_file)
+        ]
+
+        # check if any of the paths exist
+        for path in possible_paths:
+            if os.path.exists(path):
+                return path
+
+        # if no path exists, log a warning and return none
+        logger.warning(f"image file not found: {image_file}")
+        return None
+
+    def encode_image_base64(self, image_path: str) -> typing.Optional[str]:
+        """encode an image file as base64.
+
+        args:
+            image_path: path to the image file
+
+        returns:
+            base64 encoded image or none if file not found
+        """
+
+        if not image_path or not os.path.exists(image_path):
+            return None
+
+        try:
+            with open(image_path, "rb") as image_file:
+                encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
+
+            # determine the mime type based on file extension
+            file_ext = os.path.splitext(image_path)[1].lower()
+            mime_type = "image/jpeg"  # default
+
+            if file_ext == ".png":
+                mime_type = "image/png"
+            elif file_ext in [".jpg", ".jpeg"]:
+                mime_type = "image/jpeg"
+            elif file_ext == ".gif":
+                mime_type = "image/gif"
+            elif file_ext == ".webp":
+                mime_type = "image/webp"
+
+            # return data url format
+            return f"data:{mime_type};base64,{encoded_string}"
+        except Exception as e:
+            logger.error(f"error encoding image: {e}")
+            return None
+
+    def format_screenshot(self, screenshot: dict) -> dict:
+        """format a single screenshot for api response.
+
+        args:
+            screenshot: screenshot dictionary from rewinddb
+
+        returns:
+            formatted screenshot data suitable for genai models
+        """
+
+        if not screenshot:
+            return {"screenshot": None}
+
+        # get the image path
+        image_path = self.get_image_path(screenshot.get('image_file'))
+
+        # encode the image as base64
+        image_data = self.encode_image_base64(image_path) if image_path else None
+
+        # format the result
+        result = {
+            "screenshot": {
+                "frame_id": screenshot.get('frame_id'),
+                "time": screenshot.get('frame_time').isoformat(),
+                "application": screenshot.get('application'),
+                "window": screenshot.get('window'),
+                "image_data": image_data
+            }
+        }
+
+        return result
+
+    def format_screenshots(self, screenshots: typing.List[dict]) -> dict:
+        """format multiple screenshots for api response.
+
+        args:
+            screenshots: list of screenshot dictionaries from rewinddb
+
+        returns:
+            formatted screenshots data suitable for genai models
+        """
+
+        if not screenshots:
+            return {"screenshots": []}
+
+        formatted_screenshots = []
+
+        for screenshot in screenshots:
+            # get the image path
+            image_path = self.get_image_path(screenshot.get('image_file'))
+
+            # encode the image as base64
+            image_data = self.encode_image_base64(image_path) if image_path else None
+
+            # format the screenshot
+            formatted_screenshot = {
+                "frame_id": screenshot.get('frame_id'),
+                "time": screenshot.get('frame_time').isoformat(),
+                "application": screenshot.get('application'),
+                "window": screenshot.get('window'),
+                "image_data": image_data
+            }
+
+            formatted_screenshots.append(formatted_screenshot)
+
+        return {"screenshots": formatted_screenshots}
 
     def start(self, host="0.0.0.0", port=8000):
         """start the server.
