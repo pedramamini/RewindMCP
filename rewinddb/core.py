@@ -1638,8 +1638,8 @@ class RewindDB:
             return []
 
     def get_screenshots_relative(self, days: int = 0, hours: int = 0,
-                               minutes: int = 0, seconds: int = 0,
-                               limit: int = 100) -> typing.List[dict]:
+                                minutes: int = 0, seconds: int = 0,
+                                limit: int = 100) -> typing.List[dict]:
         """retrieve screenshots from a relative time period.
 
         queries screenshots from a time period relative to now.
@@ -1661,3 +1661,559 @@ class RewindDB:
         start_time = now - delta
 
         return self.get_screenshots_absolute(start_time, now, limit)
+
+    def get_app_usage(self, start_time: typing.Optional[datetime.datetime] = None,
+                     end_time: typing.Optional[datetime.datetime] = None,
+                     days: int = 0, hours: int = 0, minutes: int = 0, seconds: int = 0) -> dict:
+        """get detailed app usage statistics for a specific time period.
+
+        queries the segment table to get detailed application usage data.
+        supports both absolute time range (start_time/end_time) and relative time period.
+
+        args:
+            start_time: optional start datetime for absolute time range
+            end_time: optional end datetime for absolute time range
+            days: number of days to look back (for relative time)
+            hours: number of hours to look back (for relative time)
+            minutes: number of minutes to look back (for relative time)
+            seconds: number of seconds to look back (for relative time)
+
+        returns:
+            dict: dictionary with detailed app usage statistics
+        """
+
+        # determine if using absolute or relative time
+        if start_time and end_time:
+            # absolute time range
+            segments = self.get_segments(start_time, end_time)
+        else:
+            # relative time period
+            now = datetime.datetime.now(datetime.timezone.utc)
+            delta = datetime.timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+            start_time = now - delta
+            segments = self.get_segments(start_time, now)
+
+        # calculate app usage time
+        app_usage = {}
+        browser_usage = {}
+        window_usage = {}
+        hourly_activity = {h: 0 for h in range(24)}  # initialize hours 0-23
+
+        for segment in segments:
+            app = segment['application']
+            window = segment['window']
+            duration = segment['duration_seconds']
+            start_hour = segment['start_time'].hour
+
+            # skip segments with zero or negative duration
+            if duration <= 0:
+                continue
+
+            # app usage
+            if app not in app_usage:
+                app_usage[app] = {
+                    'total_seconds': 0,
+                    'window_count': 0,
+                    'windows': {}
+                }
+
+            app_usage[app]['total_seconds'] += duration
+
+            # window usage
+            if window:
+                if window not in app_usage[app]['windows']:
+                    app_usage[app]['windows'][window] = 0
+                    app_usage[app]['window_count'] += 1
+
+                app_usage[app]['windows'][window] += duration
+
+                # track window usage separately
+                if window not in window_usage:
+                    window_usage[window] = 0
+                window_usage[window] += duration
+
+            # browser url tracking
+            if segment['browser_url']:
+                url = segment['browser_url']
+                if url not in browser_usage:
+                    browser_usage[url] = 0
+                browser_usage[url] += duration
+
+            # hourly activity - distribute duration across hours if spanning multiple
+            end_hour = segment['end_time'].hour
+            if start_hour == end_hour:
+                # segment contained within single hour
+                hourly_activity[start_hour] += duration
+            else:
+                # segment spans multiple hours
+                current_hour = start_hour
+                current_time = segment['start_time']
+                end_time = segment['end_time']
+
+                while current_time < end_time:
+                    next_hour = (current_time + datetime.timedelta(hours=1)).replace(
+                        minute=0, second=0, microsecond=0
+                    )
+
+                    if next_hour > end_time:
+                        # last partial hour
+                        hour_duration = (end_time - current_time).total_seconds()
+                    else:
+                        # full hour until next hour boundary
+                        hour_duration = (next_hour - current_time).total_seconds()
+
+                    hourly_activity[current_hour] += hour_duration
+                    current_hour = (current_hour + 1) % 24
+                    current_time = next_hour
+
+        # sort apps by usage time
+        sorted_apps = sorted(
+            [(app, data) for app, data in app_usage.items()],
+            key=lambda x: x[1]['total_seconds'],
+            reverse=True
+        )
+
+        # format top apps
+        top_apps = []
+        total_duration = sum(data['total_seconds'] for _, data in sorted_apps) if sorted_apps else 1
+
+        for app, data in sorted_apps[:10]:  # top 10 apps
+            # sort windows by usage
+            sorted_windows = sorted(
+                [(window, duration) for window, duration in data['windows'].items()],
+                key=lambda x: x[1],
+                reverse=True
+            )
+
+            top_windows = [
+                {
+                    'name': window,
+                    'hours': round(duration / 3600, 2),
+                    'percentage': round((duration / data['total_seconds']) * 100, 2) if data['total_seconds'] > 0 else 0
+                }
+                for window, duration in sorted_windows[:5]  # top 5 windows per app
+            ]
+
+            top_apps.append({
+                'name': app,
+                'hours': round(data['total_seconds'] / 3600, 2),
+                'percentage': round((data['total_seconds'] / total_duration) * 100, 2),
+                'window_count': data['window_count'],
+                'top_windows': top_windows
+            })
+
+        # sort browser urls by usage time
+        sorted_urls = sorted(
+            [(url, duration) for url, duration in browser_usage.items()],
+            key=lambda x: x[1],
+            reverse=True
+        )
+
+        # format top browser urls
+        top_urls = [
+            {
+                'url': url,
+                'hours': round(duration / 3600, 2),
+                'percentage': round((duration / total_duration) * 100, 2)
+            }
+            for url, duration in sorted_urls[:10]  # top 10 urls
+        ]
+
+        # format hourly activity
+        hourly_activity_list = [
+            {
+                'hour': hour,
+                'hours': round(seconds / 3600, 2),
+                'percentage': round((seconds / total_duration) * 100, 2) if total_duration > 0 else 0
+            }
+            for hour, seconds in hourly_activity.items()
+        ]
+
+        return {
+            'top_apps': top_apps,
+            'top_urls': top_urls,
+            'hourly_activity': hourly_activity_list,
+            'total_apps': len(app_usage),
+            'total_windows': len(window_usage),
+            'total_urls': len(browser_usage),
+            'total_hours': round(total_duration / 3600, 2),
+            'time_range': {
+                'start': start_time,
+                'end': end_time if end_time else datetime.datetime.now(datetime.timezone.utc)
+            }
+        }
+
+    def get_active_hours(self, start_time: typing.Optional[datetime.datetime] = None,
+                        end_time: typing.Optional[datetime.datetime] = None,
+                        days: int = 0, hours: int = 0, minutes: int = 0, seconds: int = 0) -> dict:
+        """get active computer usage hours for a specific time period.
+
+        queries the segment table to determine when the computer was actively being used.
+        supports both absolute time range (start_time/end_time) and relative time period.
+
+        args:
+            start_time: optional start datetime for absolute time range
+            end_time: optional end datetime for absolute time range
+            days: number of days to look back (for relative time)
+            hours: number of hours to look back (for relative time)
+            minutes: number of minutes to look back (for relative time)
+            seconds: number of seconds to look back (for relative time)
+
+        returns:
+            dict: dictionary with active hours data
+        """
+
+        # determine if using absolute or relative time
+        if start_time and end_time:
+            # absolute time range
+            segments = self.get_segments(start_time, end_time)
+        else:
+            # relative time period
+            now = datetime.datetime.now(datetime.timezone.utc)
+            delta = datetime.timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+            start_time = now - delta
+            end_time = now
+            segments = self.get_segments(start_time, now)
+
+        # initialize data structures
+        hourly_activity = {h: 0 for h in range(24)}  # hours 0-23
+        daily_activity = {}  # keyed by date string
+        active_periods = []  # list of active time periods
+
+        # track continuous activity periods
+        current_period_start = None
+        current_period_end = None
+        gap_threshold = 60  # seconds - gaps smaller than this are considered continuous activity
+
+        # sort segments by start time
+        sorted_segments = sorted(segments, key=lambda x: x['start_time'])
+
+        for segment in sorted_segments:
+            duration = segment['duration_seconds']
+
+            # skip segments with zero or negative duration
+            if duration <= 0:
+                continue
+
+            # track hourly activity
+            start_hour = segment['start_time'].hour
+            end_hour = segment['end_time'].hour
+
+            if start_hour == end_hour:
+                # segment contained within single hour
+                hourly_activity[start_hour] += duration
+            else:
+                # segment spans multiple hours
+                current_time = segment['start_time']
+                end_time_seg = segment['end_time']
+
+                while current_time < end_time_seg:
+                    current_hour = current_time.hour
+                    next_hour = (current_time + datetime.timedelta(hours=1)).replace(
+                        minute=0, second=0, microsecond=0
+                    )
+
+                    if next_hour > end_time_seg:
+                        # last partial hour
+                        hour_duration = (end_time_seg - current_time).total_seconds()
+                    else:
+                        # full hour until next hour boundary
+                        hour_duration = (next_hour - current_time).total_seconds()
+
+                    hourly_activity[current_hour] += hour_duration
+                    current_time = next_hour
+
+            # track daily activity
+            start_date = segment['start_time'].date()
+            end_date = segment['end_time'].date()
+
+            date_str = start_date.isoformat()
+            if date_str not in daily_activity:
+                daily_activity[date_str] = 0
+
+            if start_date == end_date:
+                # segment contained within single day
+                daily_activity[date_str] += duration
+            else:
+                # segment spans multiple days
+                current_date = start_date
+                current_time = segment['start_time']
+                end_time_seg = segment['end_time']
+
+                while current_date < end_date:
+                    next_day = (current_time + datetime.timedelta(days=1)).replace(
+                        hour=0, minute=0, second=0, microsecond=0
+                    )
+
+                    # duration until end of current day
+                    day_duration = (next_day - current_time).total_seconds()
+                    daily_activity[current_date.isoformat()] += day_duration
+
+                    # move to next day
+                    current_date = next_day.date()
+                    current_time = next_day
+
+                    # initialize next day if needed
+                    if current_date.isoformat() not in daily_activity:
+                        daily_activity[current_date.isoformat()] = 0
+
+                # add remaining time on the last day
+                if current_date.isoformat() not in daily_activity:
+                    daily_activity[current_date.isoformat()] = 0
+
+                day_duration = (end_time_seg - current_time).total_seconds()
+                daily_activity[current_date.isoformat()] += day_duration
+
+            # track continuous activity periods
+            if current_period_start is None:
+                # start a new period
+                current_period_start = segment['start_time']
+                current_period_end = segment['end_time']
+            elif (segment['start_time'] - current_period_end).total_seconds() <= gap_threshold:
+                # extend current period
+                current_period_end = max(current_period_end, segment['end_time'])
+            else:
+                # gap is too large, end current period and start a new one
+                active_periods.append({
+                    'start': current_period_start,
+                    'end': current_period_end,
+                    'duration_seconds': (current_period_end - current_period_start).total_seconds()
+                })
+                current_period_start = segment['start_time']
+                current_period_end = segment['end_time']
+
+        # add the last active period if there is one
+        if current_period_start is not None:
+            active_periods.append({
+                'start': current_period_start,
+                'end': current_period_end,
+                'duration_seconds': (current_period_end - current_period_start).total_seconds()
+            })
+
+        # format hourly activity
+        hourly_activity_list = [
+            {
+                'hour': hour,
+                'seconds': seconds,
+                'hours': round(seconds / 3600, 2)
+            }
+            for hour, seconds in hourly_activity.items()
+        ]
+
+        # format daily activity
+        daily_activity_list = [
+            {
+                'date': date,
+                'seconds': seconds,
+                'hours': round(seconds / 3600, 2)
+            }
+            for date, seconds in sorted(daily_activity.items())
+        ]
+
+        # calculate total active time
+        total_active_seconds = sum(period['duration_seconds'] for period in active_periods)
+
+        # calculate average session length
+        avg_session_length = 0
+        if active_periods:
+            avg_session_length = total_active_seconds / len(active_periods)
+
+        return {
+            'hourly_activity': hourly_activity_list,
+            'daily_activity': daily_activity_list,
+            'active_periods': active_periods,
+            'total_active_seconds': total_active_seconds,
+            'total_active_hours': round(total_active_seconds / 3600, 2),
+            'avg_session_seconds': round(avg_session_length, 2),
+            'avg_session_minutes': round(avg_session_length / 60, 2),
+            'session_count': len(active_periods),
+            'time_range': {
+                'start': start_time,
+                'end': end_time
+            }
+        }
+
+    def get_meetings(self, start_time: typing.Optional[datetime.datetime] = None,
+                    end_time: typing.Optional[datetime.datetime] = None,
+                    days: int = 0, hours: int = 0, minutes: int = 0, seconds: int = 0) -> dict:
+        """get calendar events/meetings for a specific time period.
+
+        queries the event table to get calendar events and meetings.
+        supports both absolute time range (start_time/end_time) and relative time period.
+
+        args:
+            start_time: optional start datetime for absolute time range
+            end_time: optional end datetime for absolute time range
+            days: number of days to look back (for relative time)
+            hours: number of hours to look back (for relative time)
+            minutes: number of minutes to look back (for relative time)
+            seconds: number of seconds to look back (for relative time)
+
+        returns:
+            dict: dictionary with meeting information
+        """
+
+        # determine if using absolute or relative time
+        if start_time and end_time:
+            # absolute time range
+            events = self.get_events(start_time, end_time)
+        else:
+            # relative time period
+            now = datetime.datetime.now(datetime.timezone.utc)
+            delta = datetime.timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+            start_time = now - delta
+            end_time = now
+            events = self.get_events(start_time, end_time)
+
+        # initialize data structures
+        calendar_stats = {}  # stats by calendar
+        daily_meeting_hours = {}  # meeting hours by day
+        hourly_distribution = {h: 0 for h in range(24)}  # meeting hours by hour of day
+
+        total_duration = 0
+
+        for event in events:
+            duration = event['duration_seconds']
+            calendar = event['calendar'] or 'Unknown'
+
+            # skip events with zero or negative duration
+            if duration <= 0:
+                continue
+
+            # track total duration
+            total_duration += duration
+
+            # track calendar stats
+            if calendar not in calendar_stats:
+                calendar_stats[calendar] = {
+                    'event_count': 0,
+                    'total_seconds': 0,
+                    'events': []
+                }
+
+            calendar_stats[calendar]['event_count'] += 1
+            calendar_stats[calendar]['total_seconds'] += duration
+            calendar_stats[calendar]['events'].append(event)
+
+            # track daily meeting hours
+            start_date = event['start_time'].date()
+            end_date = event['end_time'].date()
+
+            date_str = start_date.isoformat()
+            if date_str not in daily_meeting_hours:
+                daily_meeting_hours[date_str] = 0
+
+            if start_date == end_date:
+                # event contained within single day
+                daily_meeting_hours[date_str] += duration
+            else:
+                # event spans multiple days
+                current_date = start_date
+                current_time = event['start_time']
+                end_time_event = event['end_time']
+
+                while current_date < end_date:
+                    next_day = (current_time + datetime.timedelta(days=1)).replace(
+                        hour=0, minute=0, second=0, microsecond=0
+                    )
+
+                    # duration until end of current day
+                    day_duration = (next_day - current_time).total_seconds()
+                    daily_meeting_hours[current_date.isoformat()] += day_duration
+
+                    # move to next day
+                    current_date = next_day.date()
+                    current_time = next_day
+
+                    # initialize next day if needed
+                    if current_date.isoformat() not in daily_meeting_hours:
+                        daily_meeting_hours[current_date.isoformat()] = 0
+
+                # add remaining time on the last day
+                if current_date.isoformat() not in daily_meeting_hours:
+                    daily_meeting_hours[current_date.isoformat()] = 0
+
+                day_duration = (end_time_event - current_time).total_seconds()
+                daily_meeting_hours[current_date.isoformat()] += day_duration
+
+            # track hourly distribution
+            start_hour = event['start_time'].hour
+            end_hour = event['end_time'].hour
+
+            if start_hour == end_hour:
+                # event contained within single hour
+                hourly_distribution[start_hour] += duration
+            else:
+                # event spans multiple hours
+                current_time = event['start_time']
+                end_time_event = event['end_time']
+
+                while current_time < end_time_event:
+                    current_hour = current_time.hour
+                    next_hour = (current_time + datetime.timedelta(hours=1)).replace(
+                        minute=0, second=0, microsecond=0
+                    )
+
+                    if next_hour > end_time_event:
+                        # last partial hour
+                        hour_duration = (end_time_event - current_time).total_seconds()
+                    else:
+                        # full hour until next hour boundary
+                        hour_duration = (next_hour - current_time).total_seconds()
+
+                    hourly_distribution[current_hour] += hour_duration
+                    current_time = next_hour
+
+        # format calendar stats
+        calendar_stats_list = []
+        for calendar, stats in calendar_stats.items():
+            calendar_stats_list.append({
+                'calendar': calendar,
+                'event_count': stats['event_count'],
+                'hours': round(stats['total_seconds'] / 3600, 2),
+                'percentage': round((stats['total_seconds'] / total_duration) * 100, 2) if total_duration > 0 else 0
+            })
+
+        # sort by total hours
+        calendar_stats_list = sorted(calendar_stats_list, key=lambda x: x['hours'], reverse=True)
+
+        # format daily meeting hours
+        daily_meeting_list = [
+            {
+                'date': date,
+                'seconds': seconds,
+                'hours': round(seconds / 3600, 2)
+            }
+            for date, seconds in sorted(daily_meeting_hours.items())
+        ]
+
+        # format hourly distribution
+        hourly_distribution_list = [
+            {
+                'hour': hour,
+                'seconds': seconds,
+                'hours': round(seconds / 3600, 2)
+            }
+            for hour, seconds in hourly_distribution.items()
+        ]
+
+        # calculate average meeting length
+        avg_meeting_length = 0
+        if events:
+            avg_meeting_length = total_duration / len(events)
+
+        return {
+            'events': events,
+            'calendar_stats': calendar_stats_list,
+            'daily_meeting_hours': daily_meeting_list,
+            'hourly_distribution': hourly_distribution_list,
+            'total_events': len(events),
+            'total_seconds': total_duration,
+            'total_hours': round(total_duration / 3600, 2),
+            'avg_meeting_seconds': round(avg_meeting_length, 2),
+            'avg_meeting_minutes': round(avg_meeting_length / 60, 2),
+            'time_range': {
+                'start': start_time,
+                'end': end_time
+            }
+        }
