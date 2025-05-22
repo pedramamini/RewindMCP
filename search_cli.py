@@ -301,6 +301,25 @@ def format_screen_results(results):
     # format each result
     formatted_results = []
 
+    # Create a database connection for looking up timestamps
+    try:
+        from rewinddb.config import get_db_path, get_db_password
+        import pysqlcipher3.dbapi2 as sqlite3
+
+        db_path = get_db_path()
+        db_password = get_db_password()
+
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        # Configure the connection for the encrypted database
+        cursor.execute(f"PRAGMA key = '{db_password}'")
+        cursor.execute("PRAGMA cipher_compatibility = 4")
+
+        db_connection_available = True
+    except Exception as e:
+        db_connection_available = False
+
     for item in results:
         # handle results from searchRanking_content
         if 'text' in item and item['text']:
@@ -345,66 +364,106 @@ def format_screen_results(results):
                 content_id = item['content_id']
 
                 # Query the database to get the frame.createdAt for this content_id
-                try:
-                    # First, check if we have a direct connection to the database
-                    if hasattr(db, 'cursor') and db.cursor:
-                        # Use the existing database connection
-                        cursor = db.cursor
-                    else:
-                        # Create a new connection
-                        from rewinddb.config import get_db_path, get_db_password
-                        import pysqlcipher3.dbapi2 as sqlite3
+                if db_connection_available:
+                    try:
+                        # Try to determine the date from the content ID itself
+                        # Most recent content IDs are likely to be from the current date
+                        current_date = datetime.datetime.now()
+                        year_month = current_date.strftime("%Y%m")
+                        day = current_date.strftime("%d")
 
-                        db_path = get_db_path()
-                        db_password = get_db_password()
+                        # First try to query the frame table
+                        cursor.execute("""
+                            SELECT
+                                createdAt
+                            FROM
+                                frame
+                            WHERE
+                                id = ?
+                        """, (content_id,))
 
-                        conn = sqlite3.connect(db_path)
-                        cursor = conn.cursor()
+                        result = cursor.fetchone()
+                        if result:
+                            created_at = result[0]
 
-                        # Configure the connection for the encrypted database
-                        cursor.execute(f"PRAGMA key = '{db_password}'")
-                        cursor.execute("PRAGMA cipher_compatibility = 4")
+                            # Parse the timestamp
+                            if isinstance(created_at, int):
+                                # Convert milliseconds to datetime
+                                frame_time = datetime.datetime.fromtimestamp(created_at / 1000)
+                            else:
+                                # Parse ISO format
+                                try:
+                                    frame_time = datetime.datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%S.%f")
+                                except ValueError:
+                                    frame_time = datetime.datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%S")
 
-                    # Query the frame table to get the createdAt timestamp for this content_id
-                    cursor.execute("""
-                        SELECT
-                            createdAt
-                        FROM
-                            frame
-                        WHERE
-                            id = ?
-                    """, (content_id,))
+                            # Construct recording path
+                            year_month = frame_time.strftime("%Y%m")
+                            day = frame_time.strftime("%d")
+                            recording_path = f"~/Library/Application Support/com.memoryvault.MemoryVault/chunks/{year_month}/{day}"
 
-                    result = cursor.fetchone()
-                    if result:
-                        created_at = result[0]
-
-                        # Parse the timestamp
-                        if isinstance(created_at, int):
-                            # Convert milliseconds to datetime
-                            frame_time = datetime.datetime.fromtimestamp(created_at / 1000)
+                            formatted_results.append(f"  Recording path: {recording_path}")
+                            formatted_results.append(f"  Timestamp: {frame_time.strftime('%Y-%m-%d %H:%M:%S')}")
                         else:
-                            # Parse ISO format
-                            try:
-                                frame_time = datetime.datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%S.%f")
-                            except ValueError:
-                                frame_time = datetime.datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%S")
+                            # If no direct match in frame table, try to use the content ID to estimate the date
+                            # Check if the content ID is in searchRanking_content
+                            cursor.execute("""
+                                SELECT
+                                    c1
+                                FROM
+                                    searchRanking_content
+                                WHERE
+                                    id = ?
+                            """, (content_id,))
 
-                        # Construct recording path
-                        year_month = frame_time.strftime("%Y%m")
-                        day = frame_time.strftime("%d")
-                        recording_path = f"~/Library/Application Support/com.memoryvault.MemoryVault/chunks/{year_month}/{day}"
+                            result = cursor.fetchone()
+                            if result and result[0]:
+                                # Try to extract date from c1
+                                timestamp_str = str(result[0])
+                                if "UTC:" in timestamp_str:
+                                    timestamp_parts = timestamp_str.split("UTC:")
+                                    if len(timestamp_parts) > 0:
+                                        date_part = timestamp_parts[0].strip()
+                                        try:
+                                            date_obj = datetime.datetime.strptime(date_part, "%a %b %d %I:%M:%S %p")
+                                            # Add current year
+                                            date_obj = date_obj.replace(year=current_date.year)
 
-                        formatted_results.append(f"  Recording path: {recording_path}")
-                        formatted_results.append(f"  Timestamp: {frame_time.strftime('%Y-%m-%d %H:%M:%S')}")
-                    else:
-                        # If no timestamp found, use the content_id to provide a hint
+                                            # Construct recording path
+                                            year_month = date_obj.strftime("%Y%m")
+                                            day = date_obj.strftime("%d")
+                                            recording_path = f"~/Library/Application Support/com.memoryvault.MemoryVault/chunks/{year_month}/{day}"
+
+                                            formatted_results.append(f"  Recording path: {recording_path}")
+                                            formatted_results.append(f"  Timestamp (estimated): {date_obj.strftime('%Y-%m-%d %H:%M:%S')}")
+                                        except Exception as e:
+                                            # Use current date as fallback
+                                            recording_path = f"~/Library/Application Support/com.memoryvault.MemoryVault/chunks/{year_month}/{day}"
+                                            formatted_results.append(f"  Recording path (estimated): {recording_path}")
+                                            formatted_results.append(f"  Content ID: {content_id}")
+                                    else:
+                                        # Use current date as fallback
+                                        recording_path = f"~/Library/Application Support/com.memoryvault.MemoryVault/chunks/{year_month}/{day}"
+                                        formatted_results.append(f"  Recording path (estimated): {recording_path}")
+                                        formatted_results.append(f"  Content ID: {content_id}")
+                                else:
+                                    # Use current date as fallback
+                                    recording_path = f"~/Library/Application Support/com.memoryvault.MemoryVault/chunks/{year_month}/{day}"
+                                    formatted_results.append(f"  Recording path (estimated): {recording_path}")
+                                    formatted_results.append(f"  Content ID: {content_id}")
+                            else:
+                                # Use current date as fallback
+                                recording_path = f"~/Library/Application Support/com.memoryvault.MemoryVault/chunks/{year_month}/{day}"
+                                formatted_results.append(f"  Recording path (estimated): {recording_path}")
+                                formatted_results.append(f"  Content ID: {content_id}")
+                    except Exception as e:
+                        # Fallback if there's an error
                         formatted_results.append(f"  Content ID: {content_id}")
-                        formatted_results.append("  Note: This content ID could not be linked to a frame timestamp")
-                except Exception as e:
-                    # Fallback if there's an error
+                        formatted_results.append(f"  Note: Error retrieving frame timestamp: {str(e)}")
+                else:
+                    # If database connection is not available
                     formatted_results.append(f"  Content ID: {content_id}")
-                    formatted_results.append(f"  Note: Error retrieving frame timestamp: {e}")
+                    formatted_results.append("  Note: Database connection not available for timestamp lookup")
 
             formatted_results.append("")  # empty line between results
 
@@ -439,6 +498,10 @@ def format_screen_results(results):
                 formatted_results.append("  Note: No timestamp available for this frame")
 
             formatted_results.append("")  # empty line between results
+
+    # Close the database connection if it was opened
+    if db_connection_available:
+        conn.close()
 
     return "\n".join(formatted_results)
 
