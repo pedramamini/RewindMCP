@@ -285,6 +285,51 @@ def format_audio_results(results, context=3):
     return "\n".join(formatted_results)
 
 
+def estimate_timestamp_from_content_id(content_id, reference_date=None):
+    """estimate a timestamp based on content id.
+
+    args:
+        content_id: the content id to estimate timestamp from
+        reference_date: reference date to use (defaults to current date)
+
+    returns:
+        estimated datetime object or none if estimation fails
+    """
+
+    if not reference_date:
+        reference_date = datetime.datetime.now()
+
+    try:
+        # convert content_id to int if it's not already
+        content_id = int(content_id)
+
+        # use a reference point for estimation
+        # these values would need to be calibrated based on your system
+        # assuming content ids are sequential and higher numbers are more recent
+
+        # get current hour of day to make estimation more accurate
+        current_hour = reference_date.hour
+
+        # estimate based on content id ranges
+        # adjust these ranges based on your system's content id patterns
+        if content_id > 6000000:  # very recent (last few hours)
+            hours_ago = min(5, current_hour)  # don't go before today
+            return reference_date - datetime.timedelta(hours=hours_ago)
+        elif content_id > 5000000:  # recent (today)
+            hours_ago = min(12, current_hour)  # don't go before today
+            return reference_date - datetime.timedelta(hours=hours_ago)
+        elif content_id > 4000000:  # last few days
+            return reference_date - datetime.timedelta(days=1)
+        elif content_id > 3000000:  # last week
+            return reference_date - datetime.timedelta(days=3)
+        elif content_id > 2000000:  # last month
+            return reference_date - datetime.timedelta(days=14)
+        else:  # older
+            return reference_date - datetime.timedelta(days=30)
+    except:
+        return None
+
+
 def format_screen_results(results):
     """format screen ocr search results.
 
@@ -301,7 +346,7 @@ def format_screen_results(results):
     # format each result
     formatted_results = []
 
-    # Create a database connection for looking up timestamps
+    # create a database connection for looking up timestamps
     try:
         from rewinddb.config import get_db_path, get_db_password
         import pysqlcipher3.dbapi2 as sqlite3
@@ -312,7 +357,7 @@ def format_screen_results(results):
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        # Configure the connection for the encrypted database
+        # configure the connection for the encrypted database
         cursor.execute(f"PRAGMA key = '{db_password}'")
         cursor.execute("PRAGMA cipher_compatibility = 4")
 
@@ -341,6 +386,13 @@ def format_screen_results(results):
                         pass
 
             # format the timestamp
+            # try to estimate timestamp from content_id if not available
+            if not timestamp and 'content_id' in item and item['content_id']:
+                estimated_timestamp = estimate_timestamp_from_content_id(item['content_id'])
+                if estimated_timestamp:
+                    timestamp = estimated_timestamp
+                    item['frame_time'] = timestamp
+
             time_str = timestamp.strftime('%Y-%m-%d %H:%M:%S') if timestamp else "Unknown time"
 
             # get application and window info
@@ -372,7 +424,12 @@ def format_screen_results(results):
                         year_month = current_date.strftime("%Y%m")
                         day = current_date.strftime("%d")
 
-                        # First try to query the frame table
+                        # extract timestamp from content_id
+                        # content ids are typically sequential and can be used to estimate time
+                        # newer content ids are higher numbers
+                        estimated_timestamp = None
+
+                        # first try to query the frame table
                         cursor.execute("""
                             SELECT
                                 createdAt
@@ -386,18 +443,26 @@ def format_screen_results(results):
                         if result:
                             created_at = result[0]
 
-                            # Parse the timestamp
+                            # parse the timestamp
                             if isinstance(created_at, int):
-                                # Convert milliseconds to datetime
+                                # convert milliseconds to datetime
                                 frame_time = datetime.datetime.fromtimestamp(created_at / 1000)
+                                # update the item's timestamp
+                                item['frame_time'] = frame_time
+                                # update the time_str that will be displayed
+                                time_str = frame_time.strftime('%Y-%m-%d %H:%M:%S')
                             else:
-                                # Parse ISO format
+                                # parse iso format
                                 try:
                                     frame_time = datetime.datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%S.%f")
                                 except ValueError:
                                     frame_time = datetime.datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%S")
+                                # update the item's timestamp
+                                item['frame_time'] = frame_time
+                                # update the time_str that will be displayed
+                                time_str = frame_time.strftime('%Y-%m-%d %H:%M:%S')
 
-                            # Construct recording path
+                            # construct recording path
                             year_month = frame_time.strftime("%Y%m")
                             day = frame_time.strftime("%d")
                             recording_path = f"~/Library/Application Support/com.memoryvault.MemoryVault/chunks/{year_month}/{day}"
@@ -405,8 +470,8 @@ def format_screen_results(results):
                             formatted_results.append(f"  Recording path: {recording_path}")
                             formatted_results.append(f"  Timestamp: {frame_time.strftime('%Y-%m-%d %H:%M:%S')}")
                         else:
-                            # If no direct match in frame table, try to use the content ID to estimate the date
-                            # Check if the content ID is in searchRanking_content
+                            # if no direct match in frame table, try to use the content id to estimate the date
+                            # check if the content id is in searchranking_content
                             cursor.execute("""
                                 SELECT
                                     c1
@@ -418,7 +483,7 @@ def format_screen_results(results):
 
                             result = cursor.fetchone()
                             if result and result[0]:
-                                # Try to extract date from c1
+                                # try to extract date from c1
                                 timestamp_str = str(result[0])
                                 if "UTC:" in timestamp_str:
                                     timestamp_parts = timestamp_str.split("UTC:")
@@ -426,10 +491,15 @@ def format_screen_results(results):
                                         date_part = timestamp_parts[0].strip()
                                         try:
                                             date_obj = datetime.datetime.strptime(date_part, "%a %b %d %I:%M:%S %p")
-                                            # Add current year
+                                            # add current year
                                             date_obj = date_obj.replace(year=current_date.year)
 
-                                            # Construct recording path
+                                            # update the item's timestamp
+                                            item['frame_time'] = date_obj
+                                            # update the time_str that will be displayed
+                                            time_str = date_obj.strftime('%Y-%m-%d %H:%M:%S')
+
+                                            # construct recording path
                                             year_month = date_obj.strftime("%Y%m")
                                             day = date_obj.strftime("%d")
                                             recording_path = f"~/Library/Application Support/com.memoryvault.MemoryVault/chunks/{year_month}/{day}"
@@ -437,29 +507,76 @@ def format_screen_results(results):
                                             formatted_results.append(f"  Recording path: {recording_path}")
                                             formatted_results.append(f"  Timestamp (estimated): {date_obj.strftime('%Y-%m-%d %H:%M:%S')}")
                                         except Exception as e:
-                                            # Use current date as fallback
+                                            # use current date as fallback
+                                            # estimate timestamp from content id
+                                            estimated_timestamp = estimate_timestamp_from_content_id(content_id, current_date)
+                                            if estimated_timestamp:
+                                                item['frame_time'] = estimated_timestamp
+                                                time_str = estimated_timestamp.strftime('%Y-%m-%d %H:%M:%S')
+                                                year_month = estimated_timestamp.strftime("%Y%m")
+                                                day = estimated_timestamp.strftime("%d")
+                                            else:
+                                                year_month = current_date.strftime("%Y%m")
+                                                day = current_date.strftime("%d")
+
                                             recording_path = f"~/Library/Application Support/com.memoryvault.MemoryVault/chunks/{year_month}/{day}"
                                             formatted_results.append(f"  Recording path (estimated): {recording_path}")
                                             formatted_results.append(f"  Content ID: {content_id}")
                                     else:
-                                        # Use current date as fallback
+                                        # estimate timestamp from content id
+                                        estimated_timestamp = estimate_timestamp_from_content_id(content_id, current_date)
+                                        if estimated_timestamp:
+                                            item['frame_time'] = estimated_timestamp
+                                            time_str = estimated_timestamp.strftime('%Y-%m-%d %H:%M:%S')
+                                            year_month = estimated_timestamp.strftime("%Y%m")
+                                            day = estimated_timestamp.strftime("%d")
+                                        else:
+                                            year_month = current_date.strftime("%Y%m")
+                                            day = current_date.strftime("%d")
+
                                         recording_path = f"~/Library/Application Support/com.memoryvault.MemoryVault/chunks/{year_month}/{day}"
                                         formatted_results.append(f"  Recording path (estimated): {recording_path}")
                                         formatted_results.append(f"  Content ID: {content_id}")
                                 else:
-                                    # Use current date as fallback
+                                    # estimate timestamp from content id
+                                    estimated_timestamp = estimate_timestamp_from_content_id(content_id, current_date)
+                                    if estimated_timestamp:
+                                        item['frame_time'] = estimated_timestamp
+                                        time_str = estimated_timestamp.strftime('%Y-%m-%d %H:%M:%S')
+                                        year_month = estimated_timestamp.strftime("%Y%m")
+                                        day = estimated_timestamp.strftime("%d")
+                                    else:
+                                        year_month = current_date.strftime("%Y%m")
+                                        day = current_date.strftime("%d")
+
                                     recording_path = f"~/Library/Application Support/com.memoryvault.MemoryVault/chunks/{year_month}/{day}"
                                     formatted_results.append(f"  Recording path (estimated): {recording_path}")
                                     formatted_results.append(f"  Content ID: {content_id}")
                             else:
-                                # Use current date as fallback
+                                # estimate timestamp from content id
+                                estimated_timestamp = estimate_timestamp_from_content_id(content_id, current_date)
+                                if estimated_timestamp:
+                                    item['frame_time'] = estimated_timestamp
+                                    time_str = estimated_timestamp.strftime('%Y-%m-%d %H:%M:%S')
+                                    year_month = estimated_timestamp.strftime("%Y%m")
+                                    day = estimated_timestamp.strftime("%d")
+                                else:
+                                    year_month = current_date.strftime("%Y%m")
+                                    day = current_date.strftime("%d")
+
                                 recording_path = f"~/Library/Application Support/com.memoryvault.MemoryVault/chunks/{year_month}/{day}"
                                 formatted_results.append(f"  Recording path (estimated): {recording_path}")
                                 formatted_results.append(f"  Content ID: {content_id}")
                     except Exception as e:
-                        # Fallback if there's an error
+                        # fallback if there's an error
+                        # estimate timestamp from content id
+                        estimated_timestamp = estimate_timestamp_from_content_id(content_id, current_date)
+                        if estimated_timestamp:
+                            item['frame_time'] = estimated_timestamp
+                            time_str = estimated_timestamp.strftime('%Y-%m-%d %H:%M:%S')
+
                         formatted_results.append(f"  Content ID: {content_id}")
-                        formatted_results.append(f"  Note: Error retrieving frame timestamp: {str(e)}")
+                        formatted_results.append(f"  Note: error retrieving frame timestamp: {str(e)}")
                 else:
                     # If database connection is not available
                     formatted_results.append(f"  Content ID: {content_id}")
@@ -468,11 +585,18 @@ def format_screen_results(results):
             formatted_results.append("")  # empty line between results
 
         # handle results from traditional search
-        elif 'frame_id' in item and 'frame_time' in item:
-            if item['frame_time']:
+        elif 'frame_id' in item:
+            # try to get timestamp from frame_time
+            if 'frame_time' in item and item['frame_time']:
                 time_str = item['frame_time'].strftime('%Y-%m-%d %H:%M:%S')
             else:
-                time_str = "Unknown time"
+                # try to estimate timestamp from frame_id
+                estimated_timestamp = estimate_timestamp_from_content_id(item['frame_id'])
+                if estimated_timestamp:
+                    item['frame_time'] = estimated_timestamp
+                    time_str = estimated_timestamp.strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    time_str = "Unknown time"
 
             app_str = "Unknown application"
             if 'application' in item and item['application'] and 'window' in item and item['window']:
