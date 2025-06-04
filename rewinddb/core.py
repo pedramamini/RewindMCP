@@ -908,16 +908,16 @@ class RewindDB:
         returns:
             dict: dictionary with audio statistics
         """
-        # Convert dates to timestamps (milliseconds)
-        now_ts = int(now.timestamp() * 1000)
-        hour_ago_ts = int(hour_ago.timestamp() * 1000)
-        day_ago_ts = int(day_ago.timestamp() * 1000)
-        week_ago_ts = int(week_ago.timestamp() * 1000)
-        month_ago_ts = int(month_ago.timestamp() * 1000)
-
+        # Format dates as ISO strings for text comparison
+        now_str = now.strftime("%Y-%m-%dT%H:%M:%S")
+        hour_ago_str = hour_ago.strftime("%Y-%m-%dT%H:%M:%S")
+        day_ago_str = day_ago.strftime("%Y-%m-%dT%H:%M:%S")
+        week_ago_str = week_ago.strftime("%Y-%m-%dT%H:%M:%S")
+        month_ago_str = month_ago.strftime("%Y-%m-%dT%H:%M:%S")
+        
         # Log the timestamps for debugging
-        logger.info(f"now: {now}, now_ts: {now_ts}")
-        logger.info(f"hour_ago: {hour_ago}, hour_ago_ts: {hour_ago_ts}")
+        logger.info(f"now: {now}, now_str: {now_str}")
+        logger.info(f"hour_ago: {hour_ago}, hour_ago_str: {hour_ago_str}")
 
         # Also log the actual datetime objects for comparison
         logger.info(f"now timezone: {now.tzinfo}")
@@ -934,11 +934,11 @@ class RewindDB:
                 query = """
                     SELECT COUNT(*) FROM transcript_word tw
                     JOIN audio a ON tw.segmentId = a.segmentId
-                    WHERE a.startTime + tw.timeOffset BETWEEN ? AND ?
+                    WHERE a.startTime >= ? AND a.startTime <= ?
                 """
-                logger.info(f"Executing query: {query} with params: ({hour_ago_ts}, {now_ts})")
+                logger.info(f"Executing query: {query} with params: ({hour_ago_str}, {now_str})")
 
-                self.cursor.execute(query, (hour_ago_ts, now_ts))
+                self.cursor.execute(query, (hour_ago_str, now_str))
                 result = self.cursor.fetchone()
                 hour_count = result[0] if result else 0
 
@@ -950,11 +950,12 @@ class RewindDB:
                 logger.info(f"Total audio records: {total_audio_count}")
 
                 # Try a query with a wider time range
-                one_year_ago_ts = int((now - datetime.timedelta(days=365)).timestamp() * 1000)
+                one_year_ago = now - datetime.timedelta(days=365)
+                one_year_ago_str = one_year_ago.strftime("%Y-%m-%dT%H:%M:%S")
                 self.cursor.execute("""
                     SELECT COUNT(*) FROM audio
-                    WHERE startTime BETWEEN ? AND ?
-                """, (one_year_ago_ts, now_ts))
+                    WHERE startTime >= ? AND startTime <= ?
+                """, (one_year_ago_str, now_str))
                 year_audio_count = self.cursor.fetchone()[0]
                 logger.info(f"Audio records in the past year: {year_audio_count}")
 
@@ -962,8 +963,8 @@ class RewindDB:
                 self.cursor.execute("SELECT MIN(startTime), MAX(startTime) FROM audio")
                 min_max = self.cursor.fetchone()
                 if min_max and min_max[0] and min_max[1]:
-                    min_time = self._ms_to_datetime(min_max[0]) if isinstance(min_max[0], int) else min_max[0]
-                    max_time = self._ms_to_datetime(min_max[1]) if isinstance(min_max[1], int) else min_max[1]
+                    min_time = min_max[0]
+                    max_time = min_max[1]
                     logger.info(f"Earliest audio record: {min_time}, Latest audio record: {max_time}")
             else:
                 # For standard statistics, execute all queries
@@ -971,32 +972,32 @@ class RewindDB:
                 self.cursor.execute("""
                     SELECT COUNT(*) FROM transcript_word tw
                     JOIN audio a ON tw.segmentId = a.segmentId
-                    WHERE a.startTime + tw.timeOffset BETWEEN ? AND ?
-                """, (hour_ago_ts, now_ts))
+                    WHERE a.startTime >= ? AND a.startTime <= ?
+                """, (hour_ago_str, now_str))
                 hour_count = self.cursor.fetchone()[0]
 
                 # Day count
                 self.cursor.execute("""
                     SELECT COUNT(*) FROM transcript_word tw
                     JOIN audio a ON tw.segmentId = a.segmentId
-                    WHERE a.startTime + tw.timeOffset BETWEEN ? AND ?
-                """, (day_ago_ts, now_ts))
+                    WHERE a.startTime >= ? AND a.startTime <= ?
+                """, (day_ago_str, now_str))
                 day_count = self.cursor.fetchone()[0]
 
                 # Week count
                 self.cursor.execute("""
                     SELECT COUNT(*) FROM transcript_word tw
                     JOIN audio a ON tw.segmentId = a.segmentId
-                    WHERE a.startTime + tw.timeOffset BETWEEN ? AND ?
-                """, (week_ago_ts, now_ts))
+                    WHERE a.startTime >= ? AND a.startTime <= ?
+                """, (week_ago_str, now_str))
                 week_count = self.cursor.fetchone()[0]
 
                 # Month count
                 self.cursor.execute("""
                     SELECT COUNT(*) FROM transcript_word tw
                     JOIN audio a ON tw.segmentId = a.segmentId
-                    WHERE a.startTime + tw.timeOffset BETWEEN ? AND ?
-                """, (month_ago_ts, now_ts))
+                    WHERE a.startTime >= ? AND a.startTime <= ?
+                """, (month_ago_str, now_str))
                 month_count = self.cursor.fetchone()[0]
         except Exception as e:
             logger.error(f"error getting transcript counts: {e}")
@@ -1008,20 +1009,20 @@ class RewindDB:
             try:
                 self.cursor.execute("""
                     SELECT MIN(startTime) FROM audio
-                    WHERE startTime BETWEEN ? AND ?
-                """, (hour_ago_ts, now_ts))
+                    WHERE startTime >= ? AND startTime <= ?
+                """, (hour_ago_str, now_str))
                 earliest_timestamp = self.cursor.fetchone()[0]
 
                 # If no records in the time period, use None
                 if earliest_timestamp is None:
                     earliest_date = None
-                elif isinstance(earliest_timestamp, int):
-                    earliest_date = self._ms_to_datetime(earliest_timestamp)
                 elif isinstance(earliest_timestamp, str):
                     try:
                         earliest_date = datetime.datetime.strptime(earliest_timestamp, "%Y-%m-%dT%H:%M:%S.%f")
                     except ValueError:
                         earliest_date = datetime.datetime.strptime(earliest_timestamp, "%Y-%m-%dT%H:%M:%S")
+                elif isinstance(earliest_timestamp, int):
+                    earliest_date = self._ms_to_datetime(earliest_timestamp)
                 else:
                     earliest_date = None
             except Exception as e:
@@ -1032,8 +1033,8 @@ class RewindDB:
             try:
                 self.cursor.execute("""
                     SELECT COUNT(*) FROM audio
-                    WHERE startTime BETWEEN ? AND ?
-                """, (hour_ago_ts, now_ts))
+                    WHERE startTime >= ? AND startTime <= ?
+                """, (hour_ago_str, now_str))
                 total_audio = self.cursor.fetchone()[0]
             except Exception as e:
                 logger.error(f"error getting total audio count: {e}")
@@ -1044,8 +1045,8 @@ class RewindDB:
                 self.cursor.execute("""
                     SELECT COUNT(*) FROM transcript_word tw
                     JOIN audio a ON tw.segmentId = a.segmentId
-                    WHERE a.startTime + tw.timeOffset BETWEEN ? AND ?
-                """, (hour_ago_ts, now_ts))
+                    WHERE a.startTime >= ? AND a.startTime <= ?
+                """, (hour_ago_str, now_str))
                 total_words = self.cursor.fetchone()[0]
             except Exception as e:
                 logger.error(f"error getting total word count: {e}")
@@ -1110,12 +1111,15 @@ class RewindDB:
         returns:
             dict: dictionary with screen statistics
         """
-        # Convert dates to timestamps (milliseconds)
-        now_ts = int(now.timestamp() * 1000)
-        hour_ago_ts = int(hour_ago.timestamp() * 1000)
-        day_ago_ts = int(day_ago.timestamp() * 1000)
-        week_ago_ts = int(week_ago.timestamp() * 1000)
-        month_ago_ts = int(month_ago.timestamp() * 1000)
+        # Format dates as ISO strings for text comparison
+        now_str = now.strftime("%Y-%m-%dT%H:%M:%S")
+        hour_ago_str = hour_ago.strftime("%Y-%m-%dT%H:%M:%S")
+        day_ago_str = day_ago.strftime("%Y-%m-%dT%H:%M:%S")
+        week_ago_str = week_ago.strftime("%Y-%m-%dT%H:%M:%S")
+        month_ago_str = month_ago.strftime("%Y-%m-%dT%H:%M:%S")
+        
+        logger.debug(f"Querying screen stats from {hour_ago} to {now}")
+        logger.debug(f"Using string format: {hour_ago_str} to {now_str}")
 
         # Initialize count variables
         hour_count = day_count = week_count = month_count = 0
@@ -1127,8 +1131,8 @@ class RewindDB:
                 self.cursor.execute("""
                     SELECT COUNT(*) FROM node n
                     JOIN frame f ON n.frameId = f.id
-                    WHERE f.createdAt BETWEEN ? AND ?
-                """, (hour_ago_ts, now_ts))
+                    WHERE f.createdAt >= ? AND f.createdAt <= ?
+                """, (hour_ago_str, now_str))
                 hour_count = self.cursor.fetchone()[0]
             else:
                 # For standard statistics, execute all queries
@@ -1136,32 +1140,32 @@ class RewindDB:
                 self.cursor.execute("""
                     SELECT COUNT(*) FROM node n
                     JOIN frame f ON n.frameId = f.id
-                    WHERE f.createdAt BETWEEN ? AND ?
-                """, (hour_ago_ts, now_ts))
+                    WHERE f.createdAt >= ? AND f.createdAt <= ?
+                """, (hour_ago_str, now_str))
                 hour_count = self.cursor.fetchone()[0]
 
                 # Day count
                 self.cursor.execute("""
                     SELECT COUNT(*) FROM node n
                     JOIN frame f ON n.frameId = f.id
-                    WHERE f.createdAt BETWEEN ? AND ?
-                """, (day_ago_ts, now_ts))
+                    WHERE f.createdAt >= ? AND f.createdAt <= ?
+                """, (day_ago_str, now_str))
                 day_count = self.cursor.fetchone()[0]
 
                 # Week count
                 self.cursor.execute("""
                     SELECT COUNT(*) FROM node n
                     JOIN frame f ON n.frameId = f.id
-                    WHERE f.createdAt BETWEEN ? AND ?
-                """, (week_ago_ts, now_ts))
+                    WHERE f.createdAt >= ? AND f.createdAt <= ?
+                """, (week_ago_str, now_str))
                 week_count = self.cursor.fetchone()[0]
 
                 # Month count
                 self.cursor.execute("""
                     SELECT COUNT(*) FROM node n
                     JOIN frame f ON n.frameId = f.id
-                    WHERE f.createdAt BETWEEN ? AND ?
-                """, (month_ago_ts, now_ts))
+                    WHERE f.createdAt >= ? AND f.createdAt <= ?
+                """, (month_ago_str, now_str))
                 month_count = self.cursor.fetchone()[0]
         except Exception as e:
             logger.error(f"error getting ocr counts: {e}")
@@ -1173,8 +1177,8 @@ class RewindDB:
             try:
                 self.cursor.execute("""
                     SELECT MIN(createdAt) FROM frame
-                    WHERE createdAt BETWEEN ? AND ?
-                """, (hour_ago_ts, now_ts))
+                    WHERE createdAt >= ? AND createdAt <= ?
+                """, (hour_ago_str, now_str))
                 earliest_timestamp = self.cursor.fetchone()[0]
 
                 # If no records in the time period, use None
@@ -1197,8 +1201,8 @@ class RewindDB:
             try:
                 self.cursor.execute("""
                     SELECT COUNT(*) FROM frame
-                    WHERE createdAt BETWEEN ? AND ?
-                """, (hour_ago_ts, now_ts))
+                    WHERE createdAt >= ? AND createdAt <= ?
+                """, (hour_ago_str, now_str))
                 total_frames = self.cursor.fetchone()[0]
             except Exception as e:
                 logger.error(f"error getting total frame count: {e}")
@@ -1209,8 +1213,8 @@ class RewindDB:
                 self.cursor.execute("""
                     SELECT COUNT(*) FROM node n
                     JOIN frame f ON n.frameId = f.id
-                    WHERE f.createdAt BETWEEN ? AND ?
-                """, (hour_ago_ts, now_ts))
+                    WHERE f.createdAt >= ? AND f.createdAt <= ?
+                """, (hour_ago_str, now_str))
                 total_nodes = self.cursor.fetchone()[0]
             except Exception as e:
                 logger.error(f"error getting total node count: {e}")
@@ -1271,13 +1275,17 @@ class RewindDB:
         """collect statistics about application usage.
 
         internal method to gather metrics about application usage.
+        filters out internal components like "ai.rewind.audiorecorder".
 
         returns:
             dict: dictionary with application usage statistics
         """
-        # Convert dates to timestamps (milliseconds)
-        now_ts = int(now.timestamp() * 1000)
-        week_ago_ts = int(week_ago.timestamp() * 1000)
+        # Format dates as ISO strings for text comparison
+        now_str = now.strftime("%Y-%m-%dT%H:%M:%S")
+        week_ago_str = week_ago.strftime("%Y-%m-%dT%H:%M:%S")
+        
+        logger.debug(f"Querying app usage from {week_ago} to {now}")
+        logger.debug(f"Using string format: {week_ago_str} to {now_str}")
 
         # Directly query segments from the database
         try:
@@ -1292,17 +1300,17 @@ class RewindDB:
             FROM
                 segment
             WHERE
-                (startDate BETWEEN ? AND ?) OR
-                (endDate BETWEEN ? AND ?) OR
+                (startDate >= ? AND startDate <= ?) OR
+                (endDate >= ? AND endDate <= ?) OR
                 (startDate <= ? AND endDate >= ?)
             ORDER BY
                 startDate
             """
 
             self.cursor.execute(query, (
-                week_ago_ts, now_ts,
-                week_ago_ts, now_ts,
-                week_ago_ts, now_ts
+                week_ago_str, now_str,
+                week_ago_str, now_str,
+                week_ago_str, now_str
             ))
             rows = self.cursor.fetchall()
 
@@ -1312,23 +1320,34 @@ class RewindDB:
                 app = row[3]  # bundleID
                 if app is None:
                     app = "Unknown"
+                    
+                # Skip internal Rewind components
+                if app == "ai.rewind.audiorecorder":
+                    continue
 
                 # Calculate duration in seconds
-                if isinstance(row[1], int) and isinstance(row[2], int):
-                    duration = (row[2] - row[1]) / 1000  # (endDate - startDate) / 1000
-                else:
-                    # Handle string timestamps
-                    try:
-                        start_time = datetime.datetime.strptime(row[1], "%Y-%m-%dT%H:%M:%S.%f")
-                    except ValueError:
-                        start_time = datetime.datetime.strptime(row[1], "%Y-%m-%dT%H:%M:%S")
-
-                    try:
-                        end_time = datetime.datetime.strptime(row[2], "%Y-%m-%dT%H:%M:%S.%f")
-                    except ValueError:
-                        end_time = datetime.datetime.strptime(row[2], "%Y-%m-%dT%H:%M:%S")
-
+                try:
+                    # Handle string timestamps with different formats
+                    if isinstance(row[1], str):
+                        if '.' in row[1]:
+                            start_time = datetime.datetime.strptime(row[1], "%Y-%m-%dT%H:%M:%S.%f")
+                        else:
+                            start_time = datetime.datetime.strptime(row[1], "%Y-%m-%dT%H:%M:%S")
+                    else:  # Handle integer timestamps (milliseconds)
+                        start_time = datetime.datetime.fromtimestamp(row[1]/1000)
+                        
+                    if isinstance(row[2], str):
+                        if '.' in row[2]:
+                            end_time = datetime.datetime.strptime(row[2], "%Y-%m-%dT%H:%M:%S.%f")
+                        else:
+                            end_time = datetime.datetime.strptime(row[2], "%Y-%m-%dT%H:%M:%S")
+                    else:  # Handle integer timestamps (milliseconds)
+                        end_time = datetime.datetime.fromtimestamp(row[2]/1000)
+                        
                     duration = (end_time - start_time).total_seconds()
+                except Exception as e:
+                    logger.debug(f"Error parsing timestamps for app {row[3]}: {e}")
+                    duration = 0  # Skip this segment if timestamps can't be parsed
 
                 if app in app_usage:
                     app_usage[app] += duration
@@ -1338,7 +1357,7 @@ class RewindDB:
             logger.error(f"error getting segment data: {e}")
             app_usage = {}
 
-        # Sort apps by usage time
+        # Sort apps by usage time (filtering out internal components)
         sorted_apps = sorted(app_usage.items(), key=lambda x: x[1], reverse=True)
 
         # Get top 10 apps

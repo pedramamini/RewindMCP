@@ -33,11 +33,33 @@ examples:
 
 import argparse
 import datetime
+from datetime import timezone
 import re
 import sys
 
 import rewinddb
 import rewinddb.utils
+
+
+def convert_to_local_time(dt):
+    """convert a utc datetime to local time.
+
+    args:
+        dt: datetime object in utc
+
+    returns:
+        datetime object in local time
+    """
+
+    if dt is None:
+        return None
+
+    # if datetime has no timezone info, assume it's utc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    # convert to local time
+    return dt.astimezone()
 
 
 def parse_relative_time(time_str):
@@ -199,7 +221,7 @@ def search_with_absolute_time(db, keyword, from_time_str, to_time_str, debug=Fal
         sys.exit(1)
 
 
-def format_audio_results(results, context=3):
+def format_audio_results(results, context=3, use_utc=False):
     """format audio search results with context.
 
     args:
@@ -652,6 +674,9 @@ examples:
   %(prog)s "design" --relative "2w"
   %(prog)s "python" --context 5 --debug
   %(prog)s "meeting" --env-file /path/to/.env
+  %(prog)s "meeting" --utc  # display times in UTC instead of local time
+  %(prog)s "code" --audio  # search only in audio transcripts
+  %(prog)s "menu" --visual  # search only in screen OCR data
 """
     )
 
@@ -668,6 +693,12 @@ examples:
                        help="number of words to show before/after audio hits (default: 3)")
     parser.add_argument("--debug", action="store_true", help="enable debug output")
     parser.add_argument("--env-file", metavar="FILE", help="path to .env file with database configuration")
+    parser.add_argument("--utc", action="store_true", help="display times in UTC instead of local time")
+
+    # Add source filter options
+    source_group = parser.add_mutually_exclusive_group()
+    source_group.add_argument("--audio", action="store_true", help="search only in audio transcripts")
+    source_group.add_argument("--visual", action="store_true", help="search only in screen OCR data")
 
     args = parser.parse_args()
 
@@ -708,6 +739,26 @@ def main():
             audio_results = results['audio']
             screen_results = results['screen']
 
+            # Filter results based on source options
+            if args.audio:
+                screen_results = []  # Only show audio results
+            elif args.visual:
+                audio_results = []  # Only show visual results
+
+            # Convert timestamps to local time if not using UTC
+            if not args.utc:
+                # Convert audio timestamps
+                for item in audio_results:
+                    if 'absolute_time' in item:
+                        item['absolute_time'] = convert_to_local_time(item['absolute_time'])
+                    if 'audio_start_time' in item:
+                        item['audio_start_time'] = convert_to_local_time(item['audio_start_time'])
+
+                # Convert screen timestamps
+                for item in screen_results:
+                    if 'frame_time' in item:
+                        item['frame_time'] = convert_to_local_time(item['frame_time'])
+
             print(f"found {len(audio_results)} audio matches and {len(screen_results)} screen matches.")
 
             if args.debug:
@@ -721,12 +772,12 @@ def main():
 
             # display audio results
             print("\naudio matches:")
-            formatted_audio = format_audio_results(audio_results, args.context)
+            formatted_audio = format_audio_results(audio_results, args.context, args.utc)
             print(formatted_audio)
 
             # display screen results
             print("\nscreen matches:")
-            formatted_screen = format_screen_results(screen_results)
+            formatted_screen = format_screen_results(screen_results, args.utc)
             print(formatted_screen)
 
     except FileNotFoundError as e:

@@ -82,6 +82,81 @@ class RelativeTimeParams(BaseModel):
         return v
 
 
+class ActiveHoursRelativeParams(BaseModel):
+    """parameters for relative time active hours retrieval."""
+
+    time_period: str = Field(..., description="relative time period (e.g., '1hour', '30minutes', '1day')")
+
+    @field_validator("time_period")
+    def validate_time_period(cls, v):
+        """validate the time period format."""
+
+        pattern = r"^(\d+)(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
+        if not re.match(pattern, v):
+            raise ValueError("time_period must be in format like '1hour', '30minutes', '1day'")
+        return v
+
+
+class ActiveHoursAbsoluteParams(BaseModel):
+    """parameters for absolute time active hours retrieval."""
+
+    from_time: datetime.datetime = Field(..., alias="from", description="start time in ISO format")
+    to_time: datetime.datetime = Field(..., alias="to", description="end time in ISO format")
+
+    class Config:
+        populate_by_name = True
+
+
+class AppUsageRelativeParams(BaseModel):
+    """parameters for relative time app usage retrieval."""
+
+    time_period: str = Field(..., description="relative time period (e.g., '1hour', '30minutes', '1day')")
+
+    @field_validator("time_period")
+    def validate_time_period(cls, v):
+        """validate the time period format."""
+
+        pattern = r"^(\d+)(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
+        if not re.match(pattern, v):
+            raise ValueError("time_period must be in format like '1hour', '30minutes', '1day'")
+        return v
+
+
+class AppUsageAbsoluteParams(BaseModel):
+    """parameters for absolute time app usage retrieval."""
+
+    from_time: datetime.datetime = Field(..., alias="from", description="start time in ISO format")
+    to_time: datetime.datetime = Field(..., alias="to", description="end time in ISO format")
+
+    class Config:
+        populate_by_name = True
+
+
+class MeetingsRelativeParams(BaseModel):
+    """parameters for relative time meetings retrieval."""
+
+    time_period: str = Field(..., description="relative time period (e.g., '1hour', '30minutes', '1day')")
+
+    @field_validator("time_period")
+    def validate_time_period(cls, v):
+        """validate the time period format."""
+
+        pattern = r"^(\d+)(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
+        if not re.match(pattern, v):
+            raise ValueError("time_period must be in format like '1hour', '30minutes', '1day'")
+        return v
+
+
+class MeetingsAbsoluteParams(BaseModel):
+    """parameters for absolute time meetings retrieval."""
+
+    from_time: datetime.datetime = Field(..., alias="from", description="start time in ISO format")
+    to_time: datetime.datetime = Field(..., alias="to", description="end time in ISO format")
+
+    class Config:
+        populate_by_name = True
+
+
 class AbsoluteTimeParams(BaseModel):
     """parameters for absolute time transcript retrieval."""
 
@@ -373,6 +448,108 @@ class MCPServer:
                             },
                             "required": ["keyword"]
                         }
+                    },
+                    {
+                        "name": "get_active_hours_relative",
+                        "description": "Get active computer usage hours from a relative time period",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "time_period": {
+                                    "type": "string",
+                                    "description": "Relative time period (e.g., '1hour', '30minutes', '1day')"
+                                }
+                            },
+                            "required": ["time_period"]
+                        }
+                    },
+                    {
+                        "name": "get_active_hours_absolute",
+                        "description": "Get active computer usage hours from a specific time range",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "from": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "description": "Start time in ISO format"
+                                },
+                                "to": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "description": "End time in ISO format"
+                                }
+                            },
+                            "required": ["from", "to"]
+                        }
+                    },
+                    {
+                        "name": "get_app_usage_relative",
+                        "description": "Get detailed app usage statistics from a relative time period",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "time_period": {
+                                    "type": "string",
+                                    "description": "Relative time period (e.g., '1hour', '30minutes', '1day')"
+                                }
+                            },
+                            "required": ["time_period"]
+                        }
+                    },
+                    {
+                        "name": "get_app_usage_absolute",
+                        "description": "Get detailed app usage statistics from a specific time range",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "from": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "description": "Start time in ISO format"
+                                },
+                                "to": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "description": "End time in ISO format"
+                                }
+                            },
+                            "required": ["from", "to"]
+                        }
+                    },
+                    {
+                        "name": "get_meetings_relative",
+                        "description": "Get calendar events/meetings from a relative time period",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "time_period": {
+                                    "type": "string",
+                                    "description": "Relative time period (e.g., '1hour', '30minutes', '1day')"
+                                }
+                            },
+                            "required": ["time_period"]
+                        }
+                    },
+                    {
+                        "name": "get_meetings_absolute",
+                        "description": "Get calendar events/meetings from a specific time range",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "from": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "description": "Start time in ISO format"
+                                },
+                                "to": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "description": "End time in ISO format"
+                                }
+                            },
+                            "required": ["from", "to"]
+                        }
                     }
                 ]
             }
@@ -566,6 +743,132 @@ class MCPServer:
                 except Exception as e:
                     logger.error(f"error getting screenshots: {e}", exc_info=True)
                     raise HTTPException(status_code=500, detail=f"error getting screenshots: {str(e)}")
+
+            elif tool_name == "get_active_hours_relative":
+                # validate parameters
+                try:
+                    params = ActiveHoursRelativeParams(**body)
+                except pydantic.ValidationError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+
+                # parse relative time
+                try:
+                    time_components = parse_relative_time(params.time_period)
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+
+                # get active hours
+                try:
+                    active_hours = self.db.get_active_hours(**time_components)
+                    return self.format_active_hours(active_hours)
+                except HTTPException:
+                    # Re-raise HTTP exceptions without wrapping them
+                    raise
+                except Exception as e:
+                    logger.error(f"error getting active hours: {e}", exc_info=True)
+                    raise HTTPException(status_code=500, detail=f"error getting active hours: {str(e)}")
+
+            elif tool_name == "get_active_hours_absolute":
+                # validate parameters
+                try:
+                    params = ActiveHoursAbsoluteParams(**body)
+                except pydantic.ValidationError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+
+                # get active hours
+                try:
+                    active_hours = self.db.get_active_hours(start_time=params.from_time, end_time=params.to_time)
+                    return self.format_active_hours(active_hours)
+                except HTTPException:
+                    # Re-raise HTTP exceptions without wrapping them
+                    raise
+                except Exception as e:
+                    logger.error(f"error getting active hours: {e}", exc_info=True)
+                    raise HTTPException(status_code=500, detail=f"error getting active hours: {str(e)}")
+
+            elif tool_name == "get_app_usage_relative":
+                # validate parameters
+                try:
+                    params = AppUsageRelativeParams(**body)
+                except pydantic.ValidationError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+
+                # parse relative time
+                try:
+                    time_components = parse_relative_time(params.time_period)
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+
+                # get app usage
+                try:
+                    app_usage = self.db.get_app_usage(**time_components)
+                    return self.format_app_usage(app_usage)
+                except HTTPException:
+                    # Re-raise HTTP exceptions without wrapping them
+                    raise
+                except Exception as e:
+                    logger.error(f"error getting app usage: {e}", exc_info=True)
+                    raise HTTPException(status_code=500, detail=f"error getting app usage: {str(e)}")
+
+            elif tool_name == "get_app_usage_absolute":
+                # validate parameters
+                try:
+                    params = AppUsageAbsoluteParams(**body)
+                except pydantic.ValidationError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+
+                # get app usage
+                try:
+                    app_usage = self.db.get_app_usage(start_time=params.from_time, end_time=params.to_time)
+                    return self.format_app_usage(app_usage)
+                except HTTPException:
+                    # Re-raise HTTP exceptions without wrapping them
+                    raise
+                except Exception as e:
+                    logger.error(f"error getting app usage: {e}", exc_info=True)
+                    raise HTTPException(status_code=500, detail=f"error getting app usage: {str(e)}")
+
+            elif tool_name == "get_meetings_relative":
+                # validate parameters
+                try:
+                    params = MeetingsRelativeParams(**body)
+                except pydantic.ValidationError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+
+                # parse relative time
+                try:
+                    time_components = parse_relative_time(params.time_period)
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+
+                # get meetings
+                try:
+                    meetings = self.db.get_meetings(**time_components)
+                    return self.format_meetings(meetings)
+                except HTTPException:
+                    # Re-raise HTTP exceptions without wrapping them
+                    raise
+                except Exception as e:
+                    logger.error(f"error getting meetings: {e}", exc_info=True)
+                    raise HTTPException(status_code=500, detail=f"error getting meetings: {str(e)}")
+
+            elif tool_name == "get_meetings_absolute":
+                # validate parameters
+                try:
+                    params = MeetingsAbsoluteParams(**body)
+                except pydantic.ValidationError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+
+                # get meetings
+                try:
+                    meetings = self.db.get_meetings(start_time=params.from_time, end_time=params.to_time)
+                    return self.format_meetings(meetings)
+                except HTTPException:
+                    # Re-raise HTTP exceptions without wrapping them
+                    raise
+                except Exception as e:
+                    logger.error(f"error getting meetings: {e}", exc_info=True)
+                    raise HTTPException(status_code=500, detail=f"error getting meetings: {str(e)}")
 
             else:
                 raise HTTPException(status_code=404, detail=f"tool '{tool_name}' not found")
@@ -873,6 +1176,205 @@ class MCPServer:
             formatted_screenshots.append(formatted_screenshot)
 
         return {"screenshots": formatted_screenshots}
+
+    def format_active_hours(self, active_hours: dict) -> dict:
+        """format active hours data for api response.
+
+        args:
+            active_hours: dictionary with active hours data from get_active_hours()
+
+        returns:
+            formatted active hours data suitable for genai models
+        """
+
+        if not active_hours:
+            return {"active_hours": {}}
+
+        # format hourly activity
+        hourly_activity = [
+            {
+                "hour": item["hour"],
+                "hours_active": item["hours"],
+                "seconds_active": item["seconds"]
+            }
+            for item in active_hours["hourly_activity"]
+        ]
+
+        # format daily activity
+        daily_activity = [
+            {
+                "date": item["date"],
+                "hours_active": item["hours"],
+                "seconds_active": item["seconds"]
+            }
+            for item in active_hours["daily_activity"]
+        ]
+
+        # format active periods
+        active_periods = [
+            {
+                "start_time": period["start"].isoformat(),
+                "end_time": period["end"].isoformat(),
+                "duration_seconds": period["duration_seconds"],
+                "duration_minutes": round(period["duration_seconds"] / 60, 2)
+            }
+            for period in active_hours["active_periods"]
+        ]
+
+        return {
+            "active_hours": {
+                "total_active_hours": active_hours["total_active_hours"],
+                "total_active_seconds": active_hours["total_active_seconds"],
+                "session_count": active_hours["session_count"],
+                "avg_session_minutes": active_hours["avg_session_minutes"],
+                "avg_session_seconds": active_hours["avg_session_seconds"],
+                "hourly_activity": hourly_activity,
+                "daily_activity": daily_activity,
+                "active_periods": active_periods,
+                "time_range": {
+                    "start": active_hours["time_range"]["start"].isoformat(),
+                    "end": active_hours["time_range"]["end"].isoformat()
+                }
+            }
+        }
+
+    def format_app_usage(self, app_usage: dict) -> dict:
+        """format app usage data for api response.
+
+        args:
+            app_usage: dictionary with app usage data from get_app_usage()
+
+        returns:
+            formatted app usage data suitable for genai models
+        """
+
+        if not app_usage:
+            return {"app_usage": {}}
+
+        # format top apps
+        top_apps = [
+            {
+                "name": app["name"],
+                "hours": app["hours"],
+                "percentage": app["percentage"],
+                "window_count": app.get("window_count", 0),
+                "top_windows": app.get("top_windows", [])
+            }
+            for app in app_usage["top_apps"]
+        ]
+
+        # format top urls
+        top_urls = [
+            {
+                "url": url["url"],
+                "hours": url["hours"],
+                "percentage": url["percentage"]
+            }
+            for url in app_usage.get("top_urls", [])
+        ]
+
+        # format hourly activity
+        hourly_activity = [
+            {
+                "hour": item["hour"],
+                "hours": item["hours"],
+                "percentage": item["percentage"]
+            }
+            for item in app_usage["hourly_activity"]
+        ]
+
+        return {
+            "app_usage": {
+                "total_apps": app_usage["total_apps"],
+                "total_windows": app_usage.get("total_windows", 0),
+                "total_urls": app_usage.get("total_urls", 0),
+                "total_hours": app_usage["total_hours"],
+                "top_apps": top_apps,
+                "top_urls": top_urls,
+                "hourly_activity": hourly_activity,
+                "time_range": {
+                    "start": app_usage["time_range"]["start"].isoformat(),
+                    "end": app_usage["time_range"]["end"].isoformat()
+                }
+            }
+        }
+
+    def format_meetings(self, meetings: dict) -> dict:
+        """format meetings data for api response.
+
+        args:
+            meetings: dictionary with meetings data from get_meetings()
+
+        returns:
+            formatted meetings data suitable for genai models
+        """
+
+        if not meetings:
+            return {"meetings": {}}
+
+        # format calendar stats
+        calendar_stats = [
+            {
+                "calendar": cal["calendar"],
+                "event_count": cal["event_count"],
+                "hours": cal["hours"],
+                "percentage": cal["percentage"]
+            }
+            for cal in meetings.get("calendar_stats", [])
+        ]
+
+        # format daily meeting hours
+        daily_meeting_hours = [
+            {
+                "date": day["date"],
+                "hours": day["hours"],
+                "seconds": day["seconds"]
+            }
+            for day in meetings.get("daily_meeting_hours", [])
+        ]
+
+        # format hourly distribution
+        hourly_distribution = [
+            {
+                "hour": hour["hour"],
+                "hours": hour["hours"],
+                "seconds": hour["seconds"]
+            }
+            for hour in meetings.get("hourly_distribution", [])
+        ]
+
+        # format events
+        events = [
+            {
+                "title": event.get("title", "Untitled"),
+                "start_time": event["start_time"].isoformat(),
+                "end_time": event["end_time"].isoformat(),
+                "duration_seconds": event["duration_seconds"],
+                "duration_minutes": round(event["duration_seconds"] / 60, 2),
+                "calendar": event.get("calendar", "Unknown"),
+                "location": event.get("location", ""),
+                "is_all_day": event.get("is_all_day", False)
+            }
+            for event in meetings.get("events", [])
+        ]
+
+        return {
+            "meetings": {
+                "total_events": meetings["total_events"],
+                "total_hours": meetings["total_hours"],
+                "total_seconds": meetings["total_seconds"],
+                "avg_meeting_minutes": meetings["avg_meeting_minutes"],
+                "avg_meeting_seconds": meetings["avg_meeting_seconds"],
+                "calendar_stats": calendar_stats,
+                "daily_meeting_hours": daily_meeting_hours,
+                "hourly_distribution": hourly_distribution,
+                "events": events,
+                "time_range": {
+                    "start": meetings["time_range"]["start"].isoformat(),
+                    "end": meetings["time_range"]["end"].isoformat()
+                }
+            }
+        }
 
     def start(self, host="0.0.0.0", port=8000):
         """start the server.

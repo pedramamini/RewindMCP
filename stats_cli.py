@@ -8,6 +8,7 @@ application usage, and other metrics from the rewind.ai database.
 
 import argparse
 import datetime
+from datetime import timezone
 import json
 import logging
 import re
@@ -16,6 +17,27 @@ import threading
 import time
 from tabulate import tabulate
 import rewinddb
+
+
+def convert_to_local_time(dt):
+    """convert a utc datetime to local time.
+
+    args:
+        dt: datetime object in utc
+
+    returns:
+        datetime object in local time
+    """
+
+    if dt is None:
+        return None
+
+    # if datetime has no timezone info, assume it's utc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    # convert to local time
+    return dt.astimezone()
 
 # configure logging
 logging.basicConfig(
@@ -108,7 +130,7 @@ def parse_relative_time(time_str):
     return time_components
 
 
-def display_stats(stats, relative_time=None):
+def display_stats(stats, relative_time=None, use_utc=False):
     """display collected statistics in a formatted way.
 
     formats and prints the collected statistics to the console.
@@ -127,13 +149,11 @@ def display_stats(stats, relative_time=None):
     print("=" * 80)
 
     # database overview
-    print("\n📊 DATABASE OVERVIEW")
     if db_stats['db_size_mb'] > 0:
+        print("\n📊 DATABASE OVERVIEW")
         print(f"Database Size: {db_stats['db_size_mb']} MB")
         print(f"Number of Tables: {db_stats['table_count']}")
-    else:
-        print("Database Size: Not calculated for relative time queries")
-        print("Number of Tables: Not calculated for relative time queries")
+    # Skip database overview section for relative time queries
     print("\nData Types Explanation:")
     print("- Audio: Voice recordings captured by Rewind")
     print("- Transcript Words: Individual words extracted from audio recordings")
@@ -145,6 +165,9 @@ def display_stats(stats, relative_time=None):
     print("\n🎙️ AUDIO TRANSCRIPT STATISTICS")
     earliest_date = audio_stats['earliest_date']
     if earliest_date:
+        # convert to local time if not using UTC
+        if not use_utc:
+            earliest_date = convert_to_local_time(earliest_date)
         earliest_date_str = earliest_date.strftime("%Y-%m-%d %H:%M:%S")
     else:
         earliest_date_str = "No data"
@@ -172,6 +195,9 @@ def display_stats(stats, relative_time=None):
     print("\n👁️ SCREEN OCR STATISTICS")
     earliest_date = screen_stats['earliest_date']
     if earliest_date:
+        # convert to local time if not using UTC
+        if not use_utc:
+            earliest_date = convert_to_local_time(earliest_date)
         earliest_date_str = earliest_date.strftime("%Y-%m-%d %H:%M:%S")
     else:
         earliest_date_str = "No data"
@@ -203,6 +229,7 @@ def display_stats(stats, relative_time=None):
         print("\n💻 APPLICATION USAGE STATISTICS (Past Week)")
     print(f"Total Applications: {app_stats['total_apps']}")
     print(f"Total Usage Time: {app_stats['total_hours']} hours")
+    print("Note: Internal components like 'ai.rewind.audiorecorder' are filtered out")
 
     app_table = []
     for app in app_stats['top_apps']:
@@ -218,9 +245,7 @@ def display_stats(stats, relative_time=None):
         for table in db_stats['table_stats'][:10]:  # show top 10 tables
             table_table.append([table['table'], table['records']])
         print(tabulate(table_table, headers=["Table", "Records"], tablefmt="simple"))
-    else:
-        print("\n📋 TABLE RECORD COUNTS")
-        print("Not calculated for relative time queries")
+    # Skip table record counts for relative time queries
     # display calculation time if available
     if 'calculation_time' in stats:
         print(f"\n⏱️ calculation time: {stats['calculation_time']:.2f} seconds")
@@ -243,12 +268,14 @@ examples:
   %(prog)s --relative "10d"
   %(prog)s --relative "2w"
   %(prog)s --env /path/to/.env
+  %(prog)s --relative "1 day" --utc  # display times in UTC instead of local time
 """
     )
     parser.add_argument("--env", help="path to .env file with database configuration")
     parser.add_argument("--json", action="store_true", help="output statistics as JSON")
     parser.add_argument("-r", "--relative", metavar="TIME",
                         help="relative time period (e.g., '1 hour', '5h', '3m', '10d', '2w')")
+    parser.add_argument("--utc", action="store_true", help="display times in UTC instead of local time")
     args = parser.parse_args()
 
     # initialize spinner control variables
@@ -335,7 +362,7 @@ examples:
             print(json.dumps(json_stats, indent=2))
         else:
             # Display formatted statistics
-            display_stats(stats, args.relative)
+            display_stats(stats, args.relative, args.utc)
 
         # close the database connection
         db.close()

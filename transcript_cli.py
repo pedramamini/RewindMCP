@@ -28,11 +28,33 @@ examples:
 
 import argparse
 import datetime
+from datetime import timezone
 import re
 import sys
 
 import rewinddb
 import rewinddb.utils
+
+
+def convert_to_local_time(dt):
+    """convert a utc datetime to local time.
+
+    args:
+        dt: datetime object in utc
+
+    returns:
+        datetime object in local time
+    """
+
+    if dt is None:
+        return None
+
+    # if datetime has no timezone info, assume it's utc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    # convert to local time
+    return dt.astimezone()
 
 
 def parse_relative_time(time_str):
@@ -174,6 +196,7 @@ examples:
   %(prog)s --from "13:00:00" --to "17:00:00"  # uses today's date
   %(prog)s --relative "7 days" --debug
   %(prog)s --relative "1 hour" --env-file /path/to/.env
+  %(prog)s --relative "1 day" --utc  # display times in UTC instead of local time
 """
     )
 
@@ -186,6 +209,7 @@ examples:
                        help="end time in format 'YYYY-MM-DD HH:MM:SS', 'YYYY-MM-DD' (uses 23:59:59), or 'HH:MM:SS' (uses today's date)")
     parser.add_argument("--debug", action="store_true", help="enable debug output")
     parser.add_argument("--env-file", metavar="FILE", help="path to .env file with database configuration")
+    parser.add_argument("--utc", action="store_true", help="display times in UTC instead of local time")
 
     args = parser.parse_args()
 
@@ -222,6 +246,15 @@ def main():
                 return
 
             print(f"found {len(transcripts)} transcript words.")
+
+            # convert timestamps to local time if not using UTC
+            if not args.utc:
+                for transcript in transcripts:
+                    if 'absolute_time' in transcript:
+                        transcript['absolute_time'] = convert_to_local_time(transcript['absolute_time'])
+                    if 'audio_start_time' in transcript:
+                        transcript['audio_start_time'] = convert_to_local_time(transcript['audio_start_time'])
+
             formatted = rewinddb.utils.format_transcript(transcripts)
             print("\ntranscripts:")
             print(formatted)
