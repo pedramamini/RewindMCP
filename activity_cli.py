@@ -173,6 +173,9 @@ def get_activity_absolute(db, from_time_str, to_time_str, debug=False):
     """
 
     try:
+        # get local timezone for proper conversion
+        local_tz = datetime.datetime.now().astimezone().tzinfo
+
         # check if from_time_str is time-only format (HH:MM:SS)
         if len(from_time_str) <= 8 and from_time_str.count(':') == 2:
             today = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -189,8 +192,13 @@ def get_activity_absolute(db, from_time_str, to_time_str, debug=False):
         elif len(to_time_str) == 10 and to_time_str.count('-') == 2:
             to_time_str = f"{to_time_str} 23:59:59"
 
-        from_time = datetime.datetime.strptime(from_time_str, "%Y-%m-%d %H:%M:%S")
-        to_time = datetime.datetime.strptime(to_time_str, "%Y-%m-%d %H:%M:%S")
+        # parse as naive datetime first
+        from_time_naive = datetime.datetime.strptime(from_time_str, "%Y-%m-%d %H:%M:%S")
+        to_time_naive = datetime.datetime.strptime(to_time_str, "%Y-%m-%d %H:%M:%S")
+
+        # add local timezone info and convert to UTC for database query
+        from_time = from_time_naive.replace(tzinfo=local_tz).astimezone(timezone.utc)
+        to_time = to_time_naive.replace(tzinfo=local_tz).astimezone(timezone.utc)
 
         if debug:
             logger.info(f"getting activity data from {from_time} to {to_time}")

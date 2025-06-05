@@ -175,6 +175,9 @@ def search_with_absolute_time(db, keyword, from_time_str, to_time_str, debug=Fal
     """
 
     try:
+        # get local timezone for proper conversion
+        local_tz = datetime.datetime.now().astimezone().tzinfo
+
         # check if from_time_str is time-only format (HH:MM:SS)
         if len(from_time_str) <= 8 and from_time_str.count(':') == 2:
             today = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -185,8 +188,13 @@ def search_with_absolute_time(db, keyword, from_time_str, to_time_str, debug=Fal
             today = datetime.datetime.now().strftime("%Y-%m-%d")
             to_time_str = f"{today} {to_time_str}"
 
-        from_time = datetime.datetime.strptime(from_time_str, "%Y-%m-%d %H:%M:%S")
-        to_time = datetime.datetime.strptime(to_time_str, "%Y-%m-%d %H:%M:%S")
+        # parse as naive datetime first
+        from_time_naive = datetime.datetime.strptime(from_time_str, "%Y-%m-%d %H:%M:%S")
+        to_time_naive = datetime.datetime.strptime(to_time_str, "%Y-%m-%d %H:%M:%S")
+
+        # add local timezone info and convert to UTC for database query
+        from_time = from_time_naive.replace(tzinfo=local_tz).astimezone(timezone.utc)
+        to_time = to_time_naive.replace(tzinfo=local_tz).astimezone(timezone.utc)
 
         if debug:
             print(f"debug: searching for '{keyword}' from {from_time} to {to_time}")
