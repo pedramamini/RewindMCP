@@ -122,14 +122,14 @@ def parse_relative_time(time_str):
     return time_components
 
 
-def search_with_relative_time(db, keyword, time_str, context=3, debug=False):
+def search_with_relative_time(db, keyword, time_str, context=100, debug=False):
     """search for keywords with a relative time period.
 
     args:
         db: rewinddb instance
         keyword: search keyword
         time_str: relative time string (e.g., "1 hour", "5 hours")
-        context: number of words to show before/after audio hits
+        context: number of words to show before/after audio hits (default: 100)
         debug: whether to print debug information
 
     returns:
@@ -221,12 +221,12 @@ def search_with_absolute_time(db, keyword, from_time_str, to_time_str, debug=Fal
         sys.exit(1)
 
 
-def format_audio_results(results, context=3, use_utc=False):
+def format_audio_results(results, context=100, use_utc=False):
     """format audio search results with context.
 
     args:
         results: list of audio transcript dictionaries
-        context: number of words to show before/after the hit
+        context: number of words to show before/after the hit (default: 100)
 
     returns:
         formatted string representation of the results
@@ -288,19 +288,43 @@ def format_audio_results(results, context=3, use_utc=False):
             # sort words by time offset
             words = sorted(match_data['words'], key=lambda x: x['time_offset'])
 
-            # format the context
-            word_texts = []
-            for word in words:
-                if word.get('is_match', False):
-                    # highlight match words
-                    word_texts.append(f"{word['word']}")
-                else:
-                    word_texts.append(word['word'])
+            # find the match word(s) and ensure we have context before and after
+            match_indices = [i for i, word in enumerate(words) if word.get('is_match', False)]
 
-            context_text = " ".join(word_texts)
+            if match_indices:
+                # get the first and last match indices
+                first_match = match_indices[0]
+                last_match = match_indices[-1]
 
-            # add the context to the results
-            formatted_results.append(f"  ...{context_text}...")
+                # ensure we have at least 'context' words before and after
+                start_idx = max(0, first_match - context)
+                end_idx = min(len(words), last_match + context + 1)
+
+                # get the context words
+                context_words = words[start_idx:end_idx]
+
+                # format the context
+                word_texts = []
+                for word in context_words:
+                    if word.get('is_match', False):
+                        # highlight match words
+                        word_texts.append(f"{word['word']}")
+                    else:
+                        word_texts.append(word['word'])
+
+                context_text = " ".join(word_texts)
+
+                # only add ellipsis if we actually truncated content
+                prefix = "..." if start_idx > 0 else ""
+                suffix = "..." if end_idx < len(words) else ""
+
+                # add the context to the results
+                formatted_results.append(f"  {prefix}{context_text}{suffix}")
+            else:
+                # fallback if no match found (shouldn't happen)
+                word_texts = [word['word'] for word in words]
+                context_text = " ".join(word_texts)
+                formatted_results.append(f"  ...{context_text}...")
 
         formatted_results.append("")  # empty line between sessions
 
@@ -368,6 +392,7 @@ def format_screen_results(results, use_utc=False):
 
     # format each result
     formatted_results = []
+    seen_display_hashes = set()  # Track seen display combinations to avoid duplicates
 
     # create a database connection for looking up timestamps
     try:
@@ -426,6 +451,21 @@ def format_screen_results(results, use_utc=False):
                 app_str = str(item['window_info'])
             else:
                 app_str = "Unknown application"
+
+            # create a display hash to avoid duplicate display lines
+            # round timestamp to nearest minute for better deduplication
+            if timestamp:
+                rounded_time = timestamp.replace(second=0, microsecond=0)
+                rounded_time_str = rounded_time.strftime('%Y-%m-%d %H:%M')
+            else:
+                rounded_time_str = "Unknown time"
+
+            display_hash = f"{rounded_time_str}_{app_str}"
+
+            # skip if we've already shown this exact timestamp/app combination
+            if display_hash in seen_display_hashes:
+                continue
+            seen_display_hashes.add(display_hash)
 
             # add the formatted result
             formatted_results.append(f"[{time_str}] Screen Match in {app_str}")
@@ -625,6 +665,21 @@ def format_screen_results(results, use_utc=False):
             if 'application' in item and item['application'] and 'window' in item and item['window']:
                 app_str = f"{item['application']} - {item['window']}"
 
+            # create a display hash to avoid duplicate display lines
+            # round timestamp to nearest minute for better deduplication
+            if 'frame_time' in item and item['frame_time']:
+                rounded_time = item['frame_time'].replace(second=0, microsecond=0)
+                rounded_time_str = rounded_time.strftime('%Y-%m-%d %H:%M')
+            else:
+                rounded_time_str = "Unknown time"
+
+            display_hash = f"{rounded_time_str}_{app_str}"
+
+            # skip if we've already shown this exact timestamp/app combination
+            if display_hash in seen_display_hashes:
+                continue
+            seen_display_hashes.add(display_hash)
+
             formatted_results.append(f"[{time_str}] Screen Match in {app_str}")
 
             # construct recording path based on frame ID
@@ -690,8 +745,8 @@ examples:
 
     parser.add_argument("--to", dest="to_time", metavar="DATETIME",
                        help="end time in format 'YYYY-MM-DD HH:MM:SS' or 'HH:MM:SS' (uses today's date)")
-    parser.add_argument("--context", type=int, default=3,
-                       help="number of words to show before/after audio hits (default: 3)")
+    parser.add_argument("--context", type=int, default=100,
+                       help="number of words to show before/after audio hits (default: 100)")
     parser.add_argument("--debug", action="store_true", help="enable debug output")
     parser.add_argument("--env-file", metavar="FILE", help="path to .env file with database configuration")
     parser.add_argument("--utc", action="store_true", help="display times in UTC instead of local time")

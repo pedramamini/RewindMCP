@@ -440,6 +440,7 @@ class RewindDB:
             match_time_offset = match[6]
 
             # get context words (words before and after the match)
+            # First, get ALL words in this segment to ensure we have proper context
             context_query = """
             SELECT
                 tw.id as word_id,
@@ -450,17 +451,21 @@ class RewindDB:
                 transcript_word tw
             WHERE
                 tw.segmentId = ?
-                AND tw.timeOffset BETWEEN ? AND ?
             ORDER BY
                 tw.timeOffset
             """
 
-            # get words within 5 seconds before and after the match
-            context_before = match_time_offset - 5000  # 5 seconds before
-            context_after = match_time_offset + 5000   # 5 seconds after
+            self.cursor.execute(context_query, (segment_id,))
+            all_words = self.cursor.fetchall()
 
-            self.cursor.execute(context_query, (segment_id, context_before, context_after))
-            context_words = self.cursor.fetchall()
+            # Filter to get words within 60 seconds before and after the match
+            context_before = match_time_offset - 60000  # 60 seconds before
+            context_after = match_time_offset + 60000   # 60 seconds after
+
+            context_words = [
+                word for word in all_words
+                if context_before <= word[2] <= context_after
+            ]
 
             # parse the start time
             if isinstance(start_time_val, str):
@@ -603,18 +608,106 @@ class RewindDB:
                 screen_rows = self.cursor.fetchall()
 
             screen_results = []
+            seen_content = set()  # Track seen content to avoid duplicates
+
             for row in screen_rows:
                 result = {}
 
                 # Handle results from searchRanking_content query
                 if len(row) >= 4 and row[0] is not None and row[1] is not None:
+                    # Find the search term in the text and provide context around it
+                    full_text = row[1] if row[1] else ""
+                    search_term_lower = search_term.lower()
+                    full_text_lower = full_text.lower()
+
+                    # Skip results from Rewind.ai application (internal app)
+                    app_name = row[7] if len(row) > 7 else None
+                    window_name = row[8] if len(row) > 8 else None
+
+                    # Check for various Rewind.ai identifiers
+                    if (app_name and ("rewind" in str(app_name).lower() or "memoryvault" in str(app_name).lower())) or \
+                       (window_name and "rewind" in str(window_name).lower()):
+                        continue  # Skip Rewind.ai internal app results
+
+                    # Also check if the text content suggests this is from Rewind.ai interface
+                    if "rewind.ai" in full_text_lower:
+                        # Additional check: if this looks like Rewind.ai navigation/UI, skip it
+                        rewind_ui_indicators = [
+                            "doubleTap dev server inquest labs",
+                            "saas nodes:",
+                            "braindrop asm-bots confidant downloads",
+                            "exodus intelligence gists rewind.ai"
+                        ]
+                        if any(indicator in full_text_lower for indicator in rewind_ui_indicators):
+                            continue  # Skip Rewind.ai UI elements
+
+                    # Skip generic navigation/UI text that just contains the search term as a folder/app name
+                    # Look for patterns that suggest this is just navigation text
+                    navigation_patterns = [
+                        "doubleTap dev server inquest labs",
+                        "saas nodes:",
+                        "braindrop asm-bots confidant downloads",
+                        "exodus intelligence gists",
+                        "mister softee mozilla",
+                        "opswat pedster raspberry pi",
+                        "smash labs tickle utils vxfarm scratch"
+                    ]
+
+                    is_navigation = any(pattern in full_text_lower for pattern in navigation_patterns)
+
+                    # Also skip if the search term only appears as part of a file path or folder name
+                    # and there's no other meaningful content
+                    search_occurrences = full_text_lower.count(search_term_lower)
+                    if search_occurrences == 1 and is_navigation:
+                        continue  # Skip this result as it's likely just navigation
+
+                    # Find the position of the search term
+                    match_pos = full_text_lower.find(search_term_lower)
+                    if match_pos != -1:
+                        # Extract context around the match (200 chars before and after)
+                        context_start = max(0, match_pos - 200)
+                        context_end = min(len(full_text), match_pos + len(search_term) + 200)
+                        context_text = full_text[context_start:context_end]
+
+                        # Add ellipsis if we truncated
+                        if context_start > 0:
+                            context_text = "..." + context_text
+                        if context_end < len(full_text):
+                            context_text = context_text + "..."
+                    else:
+                        # Fallback to showing beginning of text if search term not found
+                        context_text = full_text[:400] + "..." if len(full_text) > 400 else full_text
+
+                    # Create a content signature for deduplication (based on normalized text, app, window, and time window)
+                    frame_time = self._ms_to_datetime(row[5]) if len(row) > 5 and row[5] else None
+
+                    # Normalize text for better deduplication (remove extra spaces, numbers, special chars)
+                    import re
+                    normalized_text = re.sub(r'[^\w\s]', '', context_text.lower())
+                    normalized_text = re.sub(r'\s+', ' ', normalized_text).strip()
+
+                    # Create time window (round to nearest minute for grouping similar timestamps)
+                    time_window = frame_time.strftime('%Y-%m-%d %H:%M') if frame_time else ''
+
+                    # Include app and window in signature for better deduplication
+                    app_window_sig = f"{str(app_name).lower()}_{str(window_name).lower()}"
+
+                    # Create content signature
+                    content_signature = f"{normalized_text[:100]}_{app_window_sig}_{time_window}"
+
+                    # Skip if we've seen very similar content in the same app/window/time window
+                    if content_signature in seen_content:
+                        continue
+                    seen_content.add(content_signature)
+
                     result = {
                         'content_id': row[0],
-                        'text': row[1][:100] + "..." if row[1] and len(row[1]) > 100 else row[1],
+                        'text': context_text,
+                        'full_text': full_text,  # Keep full text for debugging
                         'timestamp_info': row[2],
                         'window_info': row[3],
                         'frame_id': row[4] if len(row) > 4 else None,
-                        'frame_time': self._ms_to_datetime(row[5]) if len(row) > 5 and row[5] else None,
+                        'frame_time': frame_time,
                         'segment_id': row[6] if len(row) > 6 else None,
                         'application': row[7] if len(row) > 7 else None,
                         'window': row[8] if len(row) > 8 else None,
@@ -622,17 +715,48 @@ class RewindDB:
                     }
                 # Handle results from other queries
                 else:
+                    # Skip results from Rewind.ai application (internal app)
+                    app_name = row[6] if len(row) > 6 else None
+                    window_name = row[7] if len(row) > 7 else None
+
+                    # Check for various Rewind.ai identifiers
+                    if (app_name and ("rewind" in str(app_name).lower() or "memoryvault" in str(app_name).lower())) or \
+                       (window_name and "rewind" in str(window_name).lower()):
+                        continue  # Skip Rewind.ai internal app results
+
+                    frame_time = self._ms_to_datetime(row[1]) if row[1] else None
+                    text_content = f"Screen match in {app_name} - {window_name}" if app_name and window_name else "Screen match"
+
+                    # Create a content signature for deduplication
+                    import re
+                    normalized_text = re.sub(r'[^\w\s]', '', text_content.lower())
+                    normalized_text = re.sub(r'\s+', ' ', normalized_text).strip()
+
+                    # Create time window (round to nearest minute for grouping similar timestamps)
+                    time_window = frame_time.strftime('%Y-%m-%d %H:%M') if frame_time else ''
+
+                    # Include app and window in signature for better deduplication
+                    app_window_sig = f"{str(app_name).lower()}_{str(window_name).lower()}"
+
+                    # Create content signature
+                    content_signature = f"{normalized_text}_{app_window_sig}_{time_window}"
+
+                    # Skip if we've seen very similar content in the same app/window/time window
+                    if content_signature in seen_content:
+                        continue
+                    seen_content.add(content_signature)
+
                     result = {
                         'frame_id': row[0],
-                        'frame_time': self._ms_to_datetime(row[1]) if row[1] else None,
+                        'frame_time': frame_time,
                         'segment_id': row[2] if len(row) > 2 else None,
                         'node_id': row[3] if len(row) > 3 else None,
                         'text_offset': row[4] if len(row) > 4 else None,
                         'text_length': row[5] if len(row) > 5 else None,
-                        'application': row[6] if len(row) > 6 else None,
-                        'window': row[7] if len(row) > 7 else None,
+                        'application': app_name,
+                        'window': window_name,
                         'image_file': row[8] if len(row) > 8 else None,
-                        'text': f"Screen match in {row[6]} - {row[7]}" if len(row) > 7 else "Screen match"
+                        'text': text_content
                     }
 
                 screen_results.append(result)
@@ -914,7 +1038,7 @@ class RewindDB:
         day_ago_str = day_ago.strftime("%Y-%m-%dT%H:%M:%S")
         week_ago_str = week_ago.strftime("%Y-%m-%dT%H:%M:%S")
         month_ago_str = month_ago.strftime("%Y-%m-%dT%H:%M:%S")
-        
+
         # Log the timestamps for debugging
         logger.info(f"now: {now}, now_str: {now_str}")
         logger.info(f"hour_ago: {hour_ago}, hour_ago_str: {hour_ago_str}")
@@ -1117,7 +1241,7 @@ class RewindDB:
         day_ago_str = day_ago.strftime("%Y-%m-%dT%H:%M:%S")
         week_ago_str = week_ago.strftime("%Y-%m-%dT%H:%M:%S")
         month_ago_str = month_ago.strftime("%Y-%m-%dT%H:%M:%S")
-        
+
         logger.debug(f"Querying screen stats from {hour_ago} to {now}")
         logger.debug(f"Using string format: {hour_ago_str} to {now_str}")
 
@@ -1283,7 +1407,7 @@ class RewindDB:
         # Format dates as ISO strings for text comparison
         now_str = now.strftime("%Y-%m-%dT%H:%M:%S")
         week_ago_str = week_ago.strftime("%Y-%m-%dT%H:%M:%S")
-        
+
         logger.debug(f"Querying app usage from {week_ago} to {now}")
         logger.debug(f"Using string format: {week_ago_str} to {now_str}")
 
@@ -1320,7 +1444,7 @@ class RewindDB:
                 app = row[3]  # bundleID
                 if app is None:
                     app = "Unknown"
-                    
+
                 # Skip internal Rewind components
                 if app == "ai.rewind.audiorecorder":
                     continue
@@ -1335,7 +1459,7 @@ class RewindDB:
                             start_time = datetime.datetime.strptime(row[1], "%Y-%m-%dT%H:%M:%S")
                     else:  # Handle integer timestamps (milliseconds)
                         start_time = datetime.datetime.fromtimestamp(row[1]/1000)
-                        
+
                     if isinstance(row[2], str):
                         if '.' in row[2]:
                             end_time = datetime.datetime.strptime(row[2], "%Y-%m-%dT%H:%M:%S.%f")
@@ -1343,7 +1467,7 @@ class RewindDB:
                             end_time = datetime.datetime.strptime(row[2], "%Y-%m-%dT%H:%M:%S")
                     else:  # Handle integer timestamps (milliseconds)
                         end_time = datetime.datetime.fromtimestamp(row[2]/1000)
-                        
+
                     duration = (end_time - start_time).total_seconds()
                 except Exception as e:
                     logger.debug(f"Error parsing timestamps for app {row[3]}: {e}")
