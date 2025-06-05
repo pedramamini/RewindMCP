@@ -141,11 +141,17 @@ python mcp_stdio.py --env-file /path/to/custom/.env
 
 The MCP server provides the following tools:
 
-1. `get_transcripts_relative`: Get audio transcripts from a relative time period (e.g., "1hour", "30minutes", "1day")
-2. `search_transcripts`: Search through audio transcripts for keywords with optional time filtering
-3. `search_screen_ocr`: Search through OCR screen content for keywords with optional time and application filtering
-4. `get_activity_stats`: Get activity statistics for a specified time period
-5. `get_transcript_by_id`: Get a specific transcript by audio ID
+1. **`get_transcripts_relative`**: Get audio transcripts from a relative time period (e.g., "1hour", "30minutes", "1day", "1week"). Returns transcript sessions with full text content suitable for analysis, summarization, or detailed review. Each session includes complete transcript text and word-by-word timing.
+
+2. **`get_transcripts_absolute`**: **PRIMARY TOOL for meeting summaries** - Get complete audio transcripts from a specific time window (e.g., '3 PM meeting'). This is the FIRST tool to use when asked to summarize meetings, calls, or conversations from specific times. Returns full transcript sessions with complete text content ready for analysis and summarization.
+
+3. **`search_transcripts`**: Search for specific keywords/phrases in transcripts. **NOT for meeting summaries** - use `get_transcripts_absolute` instead when asked to summarize meetings from specific times. This tool finds keyword matches with context snippets, useful for finding specific topics or names mentioned across multiple sessions.
+
+4. **`search_screen_ocr`**: Search through OCR screen content for keywords. Finds text that appeared on screen during specific time periods. Use this to find what was displayed on screen, applications used, or visual content during meetings or work sessions. Complements audio transcripts by showing what was visible.
+
+5. **`get_activity_stats`**: Get activity statistics for a specified time period (e.g., "1hour", "30minutes", "1day", "1week"). Provides comprehensive statistics about audio recordings, screen captures, and application usage.
+
+6. **`get_transcript_by_id`**: **FOLLOW-UP TOOL** - Get complete transcript content by audio ID. Use this AFTER `get_transcripts_absolute` to retrieve full transcript text for summarization. Essential second step when the first tool shows preview text that needs complete content for proper analysis.
 
 ### MCP Client Integration
 

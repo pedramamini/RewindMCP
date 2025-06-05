@@ -7,11 +7,18 @@ This is a Model Context Protocol (MCP) compliant STDIO server for RewindDB. It p
 The server implements the MCP specification with proper JSON-RPC 2.0 protocol over STDIO transport and provides:
 
 ### Tools
-- `get_transcripts_relative`: Get audio transcripts from a relative time period (e.g., "1hour", "30minutes", "1day")
-- `search_transcripts`: Search through audio transcripts for keywords with optional time filtering
-- `search_screen_ocr`: Search through OCR screen content for keywords with optional time and application filtering
-- `get_activity_stats`: Get activity statistics for a specified time period
-- `get_transcript_by_id`: Get a specific transcript by audio ID
+
+- **`get_transcripts_relative`**: Get audio transcripts from a relative time period (e.g., "1hour", "30minutes", "1day", "1week"). Returns transcript sessions with full text content suitable for analysis, summarization, or detailed review. Each session includes complete transcript text and word-by-word timing.
+
+- **`get_transcripts_absolute`**: **PRIMARY TOOL for meeting summaries** - Get complete audio transcripts from a specific time window (e.g., '3 PM meeting'). This is the FIRST tool to use when asked to summarize meetings, calls, or conversations from specific times. Returns full transcript sessions with complete text content ready for analysis and summarization.
+
+- **`search_transcripts`**: Search for specific keywords/phrases in transcripts. **NOT for meeting summaries** - use `get_transcripts_absolute` instead when asked to summarize meetings from specific times. This tool finds keyword matches with context snippets, useful for finding specific topics or names mentioned across multiple sessions.
+
+- **`search_screen_ocr`**: Search through OCR screen content for keywords. Finds text that appeared on screen during specific time periods. Use this to find what was displayed on screen, applications used, or visual content during meetings or work sessions. Complements audio transcripts by showing what was visible.
+
+- **`get_activity_stats`**: Get activity statistics for a specified time period (e.g., "1hour", "30minutes", "1day", "1week"). Provides comprehensive statistics about audio recordings, screen captures, and application usage.
+
+- **`get_transcript_by_id`**: **FOLLOW-UP TOOL** - Get complete transcript content by audio ID. Use this AFTER `get_transcripts_absolute` to retrieve full transcript text for summarization. Essential second step when the first tool shows preview text that needs complete content for proper analysis.
 
 ### Resources
 - `rewinddb://transcripts`: Access to audio transcript data
@@ -74,7 +81,7 @@ This implementation follows the MCP specification:
 
 ## Example Tool Calls
 
-### Get Recent Transcripts
+### Get Recent Transcripts (Relative Time)
 ```json
 {
   "jsonrpc": "2.0",
@@ -89,11 +96,43 @@ This implementation follows the MCP specification:
 }
 ```
 
-### Search Transcripts
+### Get Transcripts from Specific Time Window (Primary for Meeting Summaries)
 ```json
 {
   "jsonrpc": "2.0",
   "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "get_transcripts_absolute",
+    "arguments": {
+      "from": "2025-06-05T14:00:00",
+      "to": "2025-06-05T15:00:00",
+      "timezone": "America/Chicago"
+    }
+  }
+}
+```
+
+### Get Complete Transcript by ID (Follow-up Tool)
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "get_transcript_by_id",
+    "arguments": {
+      "audio_id": 12345
+    }
+  }
+}
+```
+
+### Search Transcripts for Keywords
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
   "method": "tools/call",
   "params": {
     "name": "search_transcripts",
@@ -109,7 +148,7 @@ This implementation follows the MCP specification:
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 3,
+  "id": 5,
   "method": "tools/call",
   "params": {
     "name": "search_screen_ocr",
@@ -126,7 +165,7 @@ This implementation follows the MCP specification:
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 3,
+  "id": 6,
   "method": "tools/call",
   "params": {
     "name": "get_activity_stats",
