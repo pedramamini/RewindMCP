@@ -23,6 +23,14 @@ import argparse
 import datetime
 import re
 from typing import Any, Dict, List, Optional, Union
+try:
+    from zoneinfo import ZoneInfo
+    import time
+except ImportError:
+    # Fallback for Python < 3.9
+    from datetime import timezone
+    ZoneInfo = None
+    import time
 
 import rewinddb
 from rewinddb.config import load_config
@@ -32,6 +40,101 @@ logger = logging.getLogger("mcp_stdio")
 
 # Global database connection
 db: Optional[rewinddb.RewindDB] = None
+
+# Global system timezone (detected at startup)
+system_timezone: Optional[str] = None
+
+
+def detect_system_timezone() -> str:
+    """Detect the system's local timezone."""
+    global system_timezone
+    if system_timezone is not None:
+        return system_timezone
+
+    try:
+        if ZoneInfo:
+            # Python 3.9+ with zoneinfo
+            import time
+            system_timezone = time.tzname[0] if time.daylight == 0 else time.tzname[1]
+            # Try to get IANA timezone name
+            try:
+                # This works on most Unix systems
+                with open('/etc/timezone', 'r') as f:
+                    system_timezone = f.read().strip()
+            except (FileNotFoundError, PermissionError):
+                try:
+                    # Alternative method for some systems
+                    import os
+                    if 'TZ' in os.environ:
+                        system_timezone = os.environ['TZ']
+                    else:
+                        # Fallback to UTC offset
+                        offset_seconds = time.timezone if time.daylight == 0 else time.altzone
+                        offset_hours = -offset_seconds // 3600
+                        system_timezone = f"UTC{offset_hours:+d}"
+                except:
+                    system_timezone = "UTC"
+        else:
+            # Fallback for older Python
+            system_timezone = "UTC"
+
+        logger.info(f"Detected system timezone: {system_timezone}")
+        return system_timezone
+
+    except Exception as e:
+        logger.warning(f"Failed to detect system timezone: {e}, using UTC")
+        system_timezone = "UTC"
+        return system_timezone
+
+
+    """Parse a datetime string and convert to UTC.
+
+    Args:
+        time_str: ISO format datetime string, optionally with timezone
+        timezone: Optional timezone name (e.g., 'America/Chicago') if time_str has no timezone
+                 If None, will use detected system timezone
+
+    Returns:
+        datetime object in UTC
+    """
+    try:
+        # Try to parse as timezone-aware datetime first
+        dt = datetime.datetime.fromisoformat(time_str)
+
+        # If no timezone info, determine what timezone to use
+        if dt.tzinfo is None:
+            # Use provided timezone, or fall back to system timezone
+            tz_to_use = timezone or detect_system_timezone()
+
+            if ZoneInfo and tz_to_use != "UTC":
+                try:
+                    if tz_to_use.startswith("UTC"):
+                        # Handle UTC+X or UTC-X format
+                        if tz_to_use == "UTC":
+                            local_tz = datetime.timezone.utc
+                        else:
+                            # Parse UTC offset (e.g., "UTC-6" or "UTC+5")
+                            sign = 1 if tz_to_use[3] == '+' else -1
+                            hours = int(tz_to_use[4:])
+                            local_tz = datetime.timezone(datetime.timedelta(hours=sign * hours))
+                    else:
+                        # Try to use as IANA timezone name
+                        local_tz = ZoneInfo(tz_to_use)
+                    dt = dt.replace(tzinfo=local_tz)
+                    logger.debug(f"Applied timezone '{tz_to_use}' to '{time_str}'")
+                except Exception as e:
+                    logger.warning(f"Failed to apply timezone '{tz_to_use}': {e}, using UTC")
+                    dt = dt.replace(tzinfo=datetime.timezone.utc)
+            else:
+                # Fallback: assume UTC
+                logger.debug(f"No timezone support or UTC specified, treating '{time_str}' as UTC")
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
+
+        # Convert to UTC
+        return dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+
+    except ValueError as e:
+        raise ValueError(f"Invalid datetime format '{time_str}': {e}")
 
 
 def parse_relative_time(time_str: str) -> Dict[str, int]:
@@ -220,11 +323,15 @@ class MCPServer:
                     "properties": {
                         "from": {
                             "type": "string",
-                            "description": "Start time in ISO format (e.g., '2024-01-15T14:00:00')"
+                            "description": "Start time in ISO format. Can include timezone (e.g., '2024-01-15T14:00:00-06:00') or use timezone parameter"
                         },
                         "to": {
                             "type": "string",
-                            "description": "End time in ISO format (e.g., '2024-01-15T15:00:00')"
+                            "description": "End time in ISO format. Can include timezone (e.g., '2024-01-15T15:00:00-06:00') or use timezone parameter"
+                        },
+                        "timezone": {
+                            "type": "string",
+                            "description": "Optional timezone name (e.g., 'America/Chicago') if from/to times don't include timezone info"
                         }
                     },
                     "required": ["from", "to"]
@@ -246,11 +353,15 @@ class MCPServer:
                         },
                         "from": {
                             "type": "string",
-                            "description": "Optional start time in ISO format"
+                            "description": "Optional start time in ISO format. Can include timezone or use timezone parameter"
                         },
                         "to": {
                             "type": "string",
-                            "description": "Optional end time in ISO format"
+                            "description": "Optional end time in ISO format. Can include timezone or use timezone parameter"
+                        },
+                        "timezone": {
+                            "type": "string",
+                            "description": "Optional timezone name (e.g., 'America/Chicago') if from/to times don't include timezone info"
                         }
                     },
                     "required": ["keyword"]
@@ -299,11 +410,15 @@ class MCPServer:
                         },
                         "from": {
                             "type": "string",
-                            "description": "Optional start time in ISO format"
+                            "description": "Optional start time in ISO format. Can include timezone or use timezone parameter"
                         },
                         "to": {
                             "type": "string",
-                            "description": "Optional end time in ISO format"
+                            "description": "Optional end time in ISO format. Can include timezone or use timezone parameter"
+                        },
+                        "timezone": {
+                            "type": "string",
+                            "description": "Optional timezone name (e.g., 'America/Chicago') if from/to times don't include timezone info"
                         },
                         "application": {
                             "type": "string",
@@ -479,15 +594,13 @@ class MCPServer:
             return result
 
         elif name == "get_transcripts_absolute":
-            from_time = arguments["from"]
-            to_time = arguments["to"]
+            from_time_str = arguments["from"]
+            to_time_str = arguments["to"]
+            timezone = arguments.get("timezone")
 
-            # Convert string times to datetime
-            try:
-                from_time = datetime.datetime.fromisoformat(from_time)
-                to_time = datetime.datetime.fromisoformat(to_time)
-            except ValueError as e:
-                raise ValueError(f"Invalid ISO format for time parameters: {e}")
+            # Convert string times to UTC datetime
+            from_time = parse_datetime_with_timezone(from_time_str, timezone)
+            to_time = parse_datetime_with_timezone(to_time_str, timezone)
 
             # Validate time range
             if from_time >= to_time:
@@ -497,7 +610,11 @@ class MCPServer:
             transcripts = db.get_audio_transcripts_absolute(from_time, to_time)
             formatted = format_transcripts(transcripts)
 
-            result = f"Found {len(formatted['transcripts'])} transcript sessions from {from_time.isoformat()} to {to_time.isoformat()}:\n\n"
+            result = f"Found {len(formatted['transcripts'])} transcript sessions from {from_time_str} to {to_time_str}"
+            if timezone:
+                result += f" (timezone: {timezone})"
+            result += ":\n\n"
+
             for i, session in enumerate(formatted['transcripts'][:5]):  # Show first 5
                 result += f"Session {i+1} (Audio ID: {session['audio_id']}):\n"
                 result += f"Time: {session['start_time']}\n"
@@ -511,14 +628,17 @@ class MCPServer:
         elif name == "search_transcripts":
             keyword = arguments["keyword"]
             relative = arguments.get("relative")
-            from_time = arguments.get("from")
-            to_time = arguments.get("to")
+            from_time_str = arguments.get("from")
+            to_time_str = arguments.get("to")
+            timezone = arguments.get("timezone")
 
-            # Convert string times to datetime if provided
-            if from_time:
-                from_time = datetime.datetime.fromisoformat(from_time)
-            if to_time:
-                to_time = datetime.datetime.fromisoformat(to_time)
+            # Convert string times to UTC datetime if provided
+            from_time = None
+            to_time = None
+            if from_time_str:
+                from_time = parse_datetime_with_timezone(from_time_str, timezone)
+            if to_time_str:
+                to_time = parse_datetime_with_timezone(to_time_str, timezone)
 
             # Perform search based on parameters
             if relative:
@@ -649,15 +769,18 @@ class MCPServer:
         elif name == "search_screen_ocr":
             keyword = arguments["keyword"]
             relative = arguments.get("relative")
-            from_time = arguments.get("from")
-            to_time = arguments.get("to")
+            from_time_str = arguments.get("from")
+            to_time_str = arguments.get("to")
+            timezone = arguments.get("timezone")
             application = arguments.get("application")
 
-            # Convert string times to datetime if provided
-            if from_time:
-                from_time = datetime.datetime.fromisoformat(from_time)
-            if to_time:
-                to_time = datetime.datetime.fromisoformat(to_time)
+            # Convert string times to UTC datetime if provided
+            from_time = None
+            to_time = None
+            if from_time_str:
+                from_time = parse_datetime_with_timezone(from_time_str, timezone)
+            if to_time_str:
+                to_time = parse_datetime_with_timezone(to_time_str, timezone)
 
             # Perform search based on parameters
             if relative:
@@ -824,6 +947,10 @@ async def main():
         logger.setLevel(logging.DEBUG)
     else:
         logger.setLevel(logging.INFO)
+
+    # Detect system timezone at startup
+    detected_tz = detect_system_timezone()
+    logger.info(f"MCP server starting with system timezone: {detected_tz}")
 
     # Create and run server
     server = MCPServer(args.env_file)
