@@ -149,6 +149,9 @@ def get_transcripts_absolute(db, from_time_str, to_time_str):
     """
 
     try:
+        # get local timezone for proper conversion
+        local_tz = datetime.datetime.now().astimezone().tzinfo
+
         # check if from_time_str is time-only format (HH:MM:SS)
         if len(from_time_str) <= 8 and from_time_str.count(':') == 2:
             today = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -165,8 +168,14 @@ def get_transcripts_absolute(db, from_time_str, to_time_str):
         elif len(to_time_str) == 10 and to_time_str.count('-') == 2:
             to_time_str = f"{to_time_str} 23:59:59"
 
-        from_time = datetime.datetime.strptime(from_time_str, "%Y-%m-%d %H:%M:%S")
-        to_time = datetime.datetime.strptime(to_time_str, "%Y-%m-%d %H:%M:%S")
+        # parse as naive datetime first
+        from_time_naive = datetime.datetime.strptime(from_time_str, "%Y-%m-%d %H:%M:%S")
+        to_time_naive = datetime.datetime.strptime(to_time_str, "%Y-%m-%d %H:%M:%S")
+
+        # add local timezone info and convert to UTC for database query
+        from_time = from_time_naive.replace(tzinfo=local_tz).astimezone(timezone.utc)
+        to_time = to_time_naive.replace(tzinfo=local_tz).astimezone(timezone.utc)
+
         return db.get_audio_transcripts_absolute(from_time, to_time)
     except ValueError as e:
         print(f"error: invalid time format. use format 'YYYY-MM-DD HH:MM:SS', 'YYYY-MM-DD', or 'HH:MM:SS'.", file=sys.stderr)
