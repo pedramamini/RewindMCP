@@ -166,27 +166,36 @@ def search_with_absolute_time(db, keyword, from_time_str, to_time_str, debug=Fal
     args:
         db: rewinddb instance
         keyword: search keyword
-        from_time_str: start time string in format "YYYY-MM-DD HH:MM:SS" or "HH:MM:SS"
-        to_time_str: end time string in format "YYYY-MM-DD HH:MM:SS" or "HH:MM:SS"
+        from_time_str: start time string in format "YYYY-MM-DD HH:MM:SS", "YYYY-MM-DD HH:MM", "HH:MM:SS", or "HH:MM"
+        to_time_str: end time string in format "YYYY-MM-DD HH:MM:SS", "YYYY-MM-DD HH:MM", "HH:MM:SS", or "HH:MM"
         debug: whether to print debug information
 
     returns:
         dictionary with 'audio' and 'screen' keys containing search results
     """
 
+    def normalize_time_string(time_str):
+        """normalize time string to handle both HH:MM and HH:MM:SS formats."""
+        # check if time_str is time-only format (HH:MM or HH:MM:SS)
+        if len(time_str) <= 8 and ':' in time_str:
+            today = datetime.datetime.now().strftime("%Y-%m-%d")
+            # if it's HH:MM format, add :00 for seconds
+            if time_str.count(':') == 1:
+                time_str = f"{time_str}:00"
+            time_str = f"{today} {time_str}"
+        # check if it's date with HH:MM format
+        elif ' ' in time_str and time_str.split(' ')[1].count(':') == 1:
+            time_str = f"{time_str}:00"
+
+        return time_str
+
     try:
         # get local timezone for proper conversion
         local_tz = datetime.datetime.now().astimezone().tzinfo
 
-        # check if from_time_str is time-only format (HH:MM:SS)
-        if len(from_time_str) <= 8 and from_time_str.count(':') == 2:
-            today = datetime.datetime.now().strftime("%Y-%m-%d")
-            from_time_str = f"{today} {from_time_str}"
-
-        # check if to_time_str is time-only format (HH:MM:SS)
-        if len(to_time_str) <= 8 and to_time_str.count(':') == 2:
-            today = datetime.datetime.now().strftime("%Y-%m-%d")
-            to_time_str = f"{today} {to_time_str}"
+        # normalize time strings to handle HH:MM format
+        from_time_str = normalize_time_string(from_time_str)
+        to_time_str = normalize_time_string(to_time_str)
 
         # parse as naive datetime first
         from_time_naive = datetime.datetime.strptime(from_time_str, "%Y-%m-%d %H:%M:%S")
@@ -225,7 +234,7 @@ def search_with_absolute_time(db, keyword, from_time_str, to_time_str, debug=Fal
             'screen': screen_results
         }
     except ValueError as e:
-        print(f"error: invalid time format. use format 'YYYY-MM-DD HH:MM:SS' or 'HH:MM:SS'.", file=sys.stderr)
+        print(f"error: invalid time format. use format 'YYYY-MM-DD HH:MM:SS', 'YYYY-MM-DD HH:MM', 'HH:MM:SS', or 'HH:MM'.", file=sys.stderr)
         sys.exit(1)
 
 
@@ -709,6 +718,7 @@ examples:
   %(prog)s "meeting"
   %(prog)s "project" --from "2023-05-11 13:00:00" --to "2023-05-11 17:00:00"
   %(prog)s "project" --from "13:00:00" --to "17:00:00"  # uses today's date
+  %(prog)s "project" --from "13:00" --to "17:00"  # uses today's date, HH:MM format
   %(prog)s "presentation" --relative "1 day"
   %(prog)s "meeting" --relative "5h"
   %(prog)s "code" --relative "3m"
@@ -727,10 +737,10 @@ examples:
     time_group = parser.add_mutually_exclusive_group()
     time_group.add_argument("-r", "--relative", metavar="TIME", help="relative time period (e.g., '1 hour', '5h', '3m', '10d', '2w')")
     time_group.add_argument("--from", dest="from_time", metavar="DATETIME",
-                           help="start time in format 'YYYY-MM-DD HH:MM:SS' or 'HH:MM:SS' (uses today's date)")
+                           help="start time in format 'YYYY-MM-DD HH:MM:SS', 'YYYY-MM-DD HH:MM', 'HH:MM:SS', or 'HH:MM' (uses today's date)")
 
     parser.add_argument("--to", dest="to_time", metavar="DATETIME",
-                       help="end time in format 'YYYY-MM-DD HH:MM:SS' or 'HH:MM:SS' (uses today's date)")
+                       help="end time in format 'YYYY-MM-DD HH:MM:SS', 'YYYY-MM-DD HH:MM', 'HH:MM:SS', or 'HH:MM' (uses today's date)")
     parser.add_argument("--context", type=int, default=100,
                        help="number of words to show before/after audio hits (default: 100)")
     parser.add_argument("--debug", action="store_true", help="enable debug output")

@@ -164,33 +164,42 @@ def get_activity_absolute(db, from_time_str, to_time_str, debug=False):
 
     args:
         db: rewinddb instance
-        from_time_str: start time string in format "YYYY-MM-DD HH:MM:SS", "YYYY-MM-DD", or "HH:MM:SS"
-        to_time_str: end time string in format "YYYY-MM-DD HH:MM:SS", "YYYY-MM-DD", or "HH:MM:SS"
+        from_time_str: start time string in format "YYYY-MM-DD HH:MM:SS", "YYYY-MM-DD HH:MM", "YYYY-MM-DD", "HH:MM:SS", or "HH:MM"
+        to_time_str: end time string in format "YYYY-MM-DD HH:MM:SS", "YYYY-MM-DD HH:MM", "YYYY-MM-DD", "HH:MM:SS", or "HH:MM"
         debug: whether to print debug information
 
     returns:
         dictionary with active hours, app usage, and meetings data
     """
 
+    def normalize_time_string(time_str, is_end_time=False):
+        """normalize time string to handle various formats."""
+        # check if time_str is time-only format (HH:MM or HH:MM:SS)
+        if len(time_str) <= 8 and ':' in time_str:
+            today = datetime.datetime.now().strftime("%Y-%m-%d")
+            # if it's HH:MM format, add :00 for seconds
+            if time_str.count(':') == 1:
+                time_str = f"{time_str}:00"
+            time_str = f"{today} {time_str}"
+        # check if it's date-only format (YYYY-MM-DD)
+        elif len(time_str) == 10 and time_str.count('-') == 2:
+            if is_end_time:
+                time_str = f"{time_str} 23:59:59"
+            else:
+                time_str = f"{time_str} 00:00:00"
+        # check if it's date with HH:MM format
+        elif ' ' in time_str and time_str.split(' ')[1].count(':') == 1:
+            time_str = f"{time_str}:00"
+
+        return time_str
+
     try:
         # get local timezone for proper conversion
         local_tz = datetime.datetime.now().astimezone().tzinfo
 
-        # check if from_time_str is time-only format (HH:MM:SS)
-        if len(from_time_str) <= 8 and from_time_str.count(':') == 2:
-            today = datetime.datetime.now().strftime("%Y-%m-%d")
-            from_time_str = f"{today} {from_time_str}"
-        # check if from_time_str is date-only format (YYYY-MM-DD)
-        elif len(from_time_str) == 10 and from_time_str.count('-') == 2:
-            from_time_str = f"{from_time_str} 00:00:00"
-
-        # check if to_time_str is time-only format (HH:MM:SS)
-        if len(to_time_str) <= 8 and to_time_str.count(':') == 2:
-            today = datetime.datetime.now().strftime("%Y-%m-%d")
-            to_time_str = f"{today} {to_time_str}"
-        # check if to_time_str is date-only format (YYYY-MM-DD)
-        elif len(to_time_str) == 10 and to_time_str.count('-') == 2:
-            to_time_str = f"{to_time_str} 23:59:59"
+        # normalize time strings to handle various formats
+        from_time_str = normalize_time_string(from_time_str, is_end_time=False)
+        to_time_str = normalize_time_string(to_time_str, is_end_time=True)
 
         # parse as naive datetime first
         from_time_naive = datetime.datetime.strptime(from_time_str, "%Y-%m-%d %H:%M:%S")
@@ -223,7 +232,7 @@ def get_activity_absolute(db, from_time_str, to_time_str, debug=False):
             'meetings': meetings
         }
     except ValueError as e:
-        logger.error(f"error: invalid time format. use format 'YYYY-MM-DD HH:MM:SS', 'YYYY-MM-DD', or 'HH:MM:SS'.")
+        logger.error(f"error: invalid time format. use format 'YYYY-MM-DD HH:MM:SS', 'YYYY-MM-DD HH:MM', 'YYYY-MM-DD', 'HH:MM:SS', or 'HH:MM'.")
         sys.exit(1)
 
 
@@ -270,9 +279,19 @@ def display_active_hours(active_hours, use_utc=False):
     for hour_data in active_hours['hourly_activity']:
         hour = hour_data['hour']
         hours_active = hour_data['hours']
+
+        # convert hour from UTC to local time if needed
+        if not use_utc:
+            # create a UTC datetime for this hour to convert to local time
+            utc_dt = datetime.datetime.now(timezone.utc).replace(hour=hour, minute=0, second=0, microsecond=0)
+            local_dt = convert_to_local_time(utc_dt)
+            display_hour = local_dt.hour
+        else:
+            display_hour = hour
+
         # create a simple bar chart
         bar = "█" * int(hours_active * 4) if hours_active > 0 else ""
-        hour_str = f"{hour:02d}:00"
+        hour_str = f"{display_hour:02d}:00"
         hourly_data.append([hour_str, f"{hours_active:.2f}", bar])
 
     print(tabulate(hourly_data, headers=["Hour", "Hours Active", "Activity"], tablefmt="simple"))
@@ -419,9 +438,19 @@ def display_meetings(meetings, use_utc=False):
     for hour_data in meetings['hourly_distribution']:
         hour = hour_data['hour']
         hours = hour_data['hours']
+
+        # convert hour from UTC to local time if needed
+        if not use_utc:
+            # create a UTC datetime for this hour to convert to local time
+            utc_dt = datetime.datetime.now(timezone.utc).replace(hour=hour, minute=0, second=0, microsecond=0)
+            local_dt = convert_to_local_time(utc_dt)
+            display_hour = local_dt.hour
+        else:
+            display_hour = hour
+
         # create a simple bar chart
         bar = "█" * int(hours * 4) if hours > 0 else ""
-        hour_str = f"{hour:02d}:00"
+        hour_str = f"{display_hour:02d}:00"
         hourly_data.append([hour_str, f"{hours:.2f}", bar])
 
     print(tabulate(hourly_data, headers=["Hour", "Hours", "Meetings"], tablefmt="simple"))
@@ -447,6 +476,7 @@ examples:
   %(prog)s --from "2023-05-11 13:00:00" --to "2023-05-11 17:00:00"
   %(prog)s --from "2023-05-11" --to "2023-05-12"  # uses 00:00:00 and 23:59:59
   %(prog)s --from "13:00:00" --to "17:00:00"  # uses today's date
+  %(prog)s --from "13:00" --to "17:00"  # uses today's date, HH:MM format
   %(prog)s --relative "7 days" --debug
   %(prog)s --relative "1 hour" --env-file /path/to/.env
   %(prog)s --relative "1 day" --utc  # display times in UTC instead of local time
@@ -456,10 +486,10 @@ examples:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("-r", "--relative", metavar="TIME", help="relative time period (e.g., '1 hour', '5h', '3m', '10d', '2w')")
     group.add_argument("--from", dest="from_time", metavar="DATETIME",
-                       help="start time in format 'YYYY-MM-DD HH:MM:SS', 'YYYY-MM-DD' (uses 00:00:00), or 'HH:MM:SS' (uses today's date)")
+                       help="start time in format 'YYYY-MM-DD HH:MM:SS', 'YYYY-MM-DD HH:MM', 'YYYY-MM-DD' (uses 00:00:00), 'HH:MM:SS', or 'HH:MM' (uses today's date)")
 
     parser.add_argument("--to", dest="to_time", metavar="DATETIME",
-                       help="end time in format 'YYYY-MM-DD HH:MM:SS', 'YYYY-MM-DD' (uses 23:59:59), or 'HH:MM:SS' (uses today's date)")
+                       help="end time in format 'YYYY-MM-DD HH:MM:SS', 'YYYY-MM-DD HH:MM', 'YYYY-MM-DD' (uses 23:59:59), 'HH:MM:SS', or 'HH:MM' (uses today's date)")
     parser.add_argument("--debug", action="store_true", help="enable debug output")
     parser.add_argument("--env-file", metavar="FILE", help="path to .env file with database configuration")
     parser.add_argument("--utc", action="store_true", help="display times in UTC instead of local time")
