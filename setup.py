@@ -30,5 +30,6 @@ setuptools.setup(
         "pydantic",
         "requests",
         "python-dotenv",
+        "mcp>=0.1.0",
     ],
 )

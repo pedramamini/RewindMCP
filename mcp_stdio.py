@@ -1,228 +1,48 @@
 #!/usr/bin/env python
 """
-mcp_stdio.py - model context protocol server for rewinddb using stdio.
+MCP-compliant STDIO server for RewindDB.
 
-call flow:
-1. initialize mcp server
-2. connect to rewinddb database
-3. register mcp tools and resources:
-   - get_transcripts_relative: retrieve audio transcripts from a relative time period
-   - get_transcripts_absolute: retrieve audio transcripts from a specific time range
-   - search: search for keywords across both audio and screen data
-4. start the server with stdio communication
-5. handle incoming requests:
-   - parse request parameters
-   - validate input
-   - query rewinddb for requested data
-   - format and return results
-6. handle errors and provide appropriate responses
-7. close database connection when server shuts down
+This server implements the Model Context Protocol (MCP) specification using
+JSON-RPC 2.0 protocol over STDIO transport. It provides tools for accessing
+RewindDB functionality.
 
-the server exposes the same tools as mcp_server.py but uses stdio for communication
-instead of HTTP.
-
-example tool calls:
-- get_transcripts_relative with parameters: {"time_period": "1hour"}
-- get_transcripts_absolute with parameters: {"from": "2023-05-11T13:00:00", "to": "2023-05-11T17:00:00"}
-- search with parameters: {"keyword": "meeting", "relative": "1day"}
-
-the server is designed to be used with the model context protocol (mcp),
-which allows genai models to access external tools and resources.
+The server exposes the following tools:
+- get_transcripts_relative: Get audio transcripts from a relative time period
+- search_transcripts: Search through audio transcripts
+- search_screen_ocr: Search through OCR screen content
+- get_activity_stats: Get activity statistics
+- get_transcript_by_id: Get specific transcript by ID
 """
 
-import os
-import re
-import sys
+import asyncio
 import json
-import time
-import base64
-import typing
+import sys
 import logging
-import datetime
 import argparse
-from pathlib import Path
-from datetime import timezone
+import datetime
+import re
+from typing import Any, Dict, List, Optional, Union
 
 import rewinddb
-import rewinddb.utils
 from rewinddb.config import load_config
 
-
-# configure logging
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[logging.FileHandler("/tmp/mcp_stdio.log")]
 )
 logger = logging.getLogger("mcp_stdio")
-class RelativeTimeParams:
-    """parameters for relative time transcript retrieval."""
 
-    def __init__(self, time_period):
-        self.time_period = time_period
-        self.validate_time_period()
-
-    def validate_time_period(self):
-        """validate the time period format."""
-
-        pattern = r"^(\d+)(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
-        if not re.match(pattern, self.time_period):
-            raise ValueError("time_period must be in format like '1hour', '30minutes', '1day'")
+# Global database connection
+db: Optional[rewinddb.RewindDB] = None
 
 
-class ActiveHoursRelativeParams:
-    """parameters for relative time active hours retrieval."""
-
-    def __init__(self, time_period):
-        self.time_period = time_period
-        self.validate_time_period()
-
-    def validate_time_period(self):
-        """validate the time period format."""
-
-        pattern = r"^(\d+)(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
-        if not re.match(pattern, self.time_period):
-            raise ValueError("time_period must be in format like '1hour', '30minutes', '1day'")
-
-
-class ActiveHoursAbsoluteParams:
-    """parameters for absolute time active hours retrieval."""
-
-    def __init__(self, from_time, to_time):
-        self.from_time = from_time
-        self.to_time = to_time
-
-
-class AppUsageRelativeParams:
-    """parameters for relative time app usage retrieval."""
-
-    def __init__(self, time_period):
-        self.time_period = time_period
-        self.validate_time_period()
-
-    def validate_time_period(self):
-        """validate the time period format."""
-
-        pattern = r"^(\d+)(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
-        if not re.match(pattern, self.time_period):
-            raise ValueError("time_period must be in format like '1hour', '30minutes', '1day'")
-
-
-class AppUsageAbsoluteParams:
-    """parameters for absolute time app usage retrieval."""
-
-    def __init__(self, from_time, to_time):
-        self.from_time = from_time
-        self.to_time = to_time
-
-
-class MeetingsRelativeParams:
-    """parameters for relative time meetings retrieval."""
-
-    def __init__(self, time_period):
-        self.time_period = time_period
-        self.validate_time_period()
-
-    def validate_time_period(self):
-        """validate the time period format."""
-
-        pattern = r"^(\d+)(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
-        if not re.match(pattern, self.time_period):
-            raise ValueError("time_period must be in format like '1hour', '30minutes', '1day'")
-
-
-class MeetingsAbsoluteParams:
-    """parameters for absolute time meetings retrieval."""
-
-    def __init__(self, from_time, to_time):
-        self.from_time = from_time
-        self.to_time = to_time
-
-
-class AbsoluteTimeParams:
-    """parameters for absolute time transcript retrieval."""
-
-    def __init__(self, from_time, to_time):
-        self.from_time = from_time
-        self.to_time = to_time
-
-
-class SearchParams:
-    """parameters for keyword search."""
-
-    def __init__(self, keyword, relative=None, from_time=None, to_time=None):
-        self.keyword = keyword
-        self.relative = relative
-        self.from_time = from_time
-        self.to_time = to_time
-        self.validate()
-
-    def validate(self):
-        """validate the parameters."""
-
-        if self.relative is not None:
-            pattern = r"^(\d+)(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
-            if not re.match(pattern, self.relative):
-                raise ValueError("relative must be in format like '1hour', '30minutes', '1day'")
-
-        if self.from_time is not None and self.to_time is None:
-            raise ValueError("to_time is required when from_time is provided")
-
-
-class ScreenshotByIdParams:
-    """parameters for retrieving a screenshot by id."""
-
-    def __init__(self, frame_id):
-        self.frame_id = frame_id
-
-
-class ScreenshotsRelativeParams:
-    """parameters for relative time screenshot retrieval."""
-
-    def __init__(self, time_period, limit=100):
-        self.time_period = time_period
-        self.limit = limit
-        self.validate()
-
-    def validate(self):
-        """validate the parameters."""
-
-        pattern = r"^(\d+)(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
-        if not re.match(pattern, self.time_period):
-            raise ValueError("time_period must be in format like '1hour', '30minutes', '1day'")
-
-        if self.limit is not None and (self.limit < 1 or self.limit > 1000):
-            raise ValueError("limit must be between 1 and 1000")
-
-
-class ScreenshotsAbsoluteParams:
-    """parameters for absolute time screenshot retrieval."""
-
-    def __init__(self, from_time, to_time, limit=100):
-        self.from_time = from_time
-        self.to_time = to_time
-        self.limit = limit
-        self.validate()
-
-    def validate(self):
-        """validate the parameters."""
-
-        if self.limit is not None and (self.limit < 1 or self.limit > 1000):
-            raise ValueError("limit must be between 1 and 1000")
-def parse_relative_time(time_str):
-    """parse a relative time string into timedelta components.
-
-    args:
-        time_str: string like "1hour", "5hours", "30minutes"
-
-    returns:
-        dict with keys for days, hours, minutes, seconds
-    """
-
+def parse_relative_time(time_str: str) -> Dict[str, int]:
+    """Parse a relative time string into timedelta components."""
     time_str = time_str.lower().strip()
     time_components = {"days": 0, "hours": 0, "minutes": 0, "seconds": 0}
 
-    # regex patterns for different time units
     patterns = {
         r"(\d+)(?:day|days)": "days",
         r"(\d+)(?:hour|hours|hr|hrs)": "hours",
@@ -230,7 +50,6 @@ def parse_relative_time(time_str):
         r"(\d+)(?:second|seconds|sec|secs)": "seconds"
     }
 
-    # try to match each pattern
     found_match = False
     for pattern, component in patterns.items():
         match = re.search(pattern, time_str)
@@ -239,163 +58,450 @@ def parse_relative_time(time_str):
             found_match = True
 
     if not found_match:
-        raise ValueError(f"invalid time format: {time_str}")
+        raise ValueError(f"Invalid time format: {time_str}")
 
     return time_components
 
 
-class MCPStdioServer:
-    """model context protocol server for rewinddb using stdio.
+def ensure_db_connection(env_file: Optional[str] = None) -> rewinddb.RewindDB:
+    """Ensure database connection is established."""
+    global db
+    if db is None:
+        try:
+            db = rewinddb.RewindDB(env_file)
+            logger.info("Connected to RewindDB")
+        except Exception as e:
+            logger.error(f"Failed to connect to RewindDB: {e}")
+            raise Exception(f"Database connection error: {str(e)}")
+    return db
 
-    this class implements an mcp server that exposes rewinddb functionality
-    to genai models through the model context protocol using stdio.
-    """
 
-    def __init__(self, env_file=None):
-        """initialize the mcp server.
+def format_transcripts(transcripts: List[Dict]) -> Dict[str, Any]:
+    """Format transcript data for MCP response."""
+    if not transcripts:
+        return {"transcripts": []}
 
-        args:
-            env_file: optional path to a .env file to load configuration from
-        """
+    # Group words by audio session
+    sessions = {}
+    for item in transcripts:
+        audio_id = item['audio_id']
+        if audio_id not in sessions:
+            sessions[audio_id] = {
+                'start_time': item['audio_start_time'],
+                'words': []
+            }
+        sessions[audio_id]['words'].append(item)
 
-        # store env_file path
-        self.env_file = env_file
+    # Format each session
+    formatted_sessions = []
+    for audio_id, session in sessions.items():
+        # Sort words by time offset
+        words = sorted(session['words'], key=lambda x: x['time_offset'])
 
-        # initialize database connection
-        self.db = None
-
-        # define available tools
-        self.tools = {
-            "get_transcripts_relative": self.get_transcripts_relative,
-            "get_transcripts_absolute": self.get_transcripts_absolute,
-            "get_screenshot": self.get_screenshot,
-            "get_screenshots_relative": self.get_screenshots_relative,
-            "get_screenshots_absolute": self.get_screenshots_absolute,
-            "search": self.search,
-            "get_active_hours_relative": self.get_active_hours_relative,
-            "get_active_hours_absolute": self.get_active_hours_absolute,
-            "get_app_usage_relative": self.get_app_usage_relative,
-            "get_app_usage_absolute": self.get_app_usage_absolute,
-            "get_meetings_relative": self.get_meetings_relative,
-            "get_meetings_absolute": self.get_meetings_absolute
+        # Extract text and timestamps
+        formatted_session = {
+            'start_time': session['start_time'].isoformat(),
+            'audio_id': audio_id,
+            'text': ' '.join(word['word'] for word in words),
+            'words': [
+                {
+                    'word': word['word'],
+                    'time': (session['start_time'] + datetime.timedelta(milliseconds=word['time_offset'])).isoformat(),
+                    'duration': word.get('duration', 0)
+                }
+                for word in words
+            ]
         }
 
-    def ensure_db_connection(self):
-        """ensure database connection is established."""
+        formatted_sessions.append(formatted_session)
 
-        if self.db is None:
-            try:
-                self.db = rewinddb.RewindDB(self.env_file)
-                logger.info("connected to rewinddb")
-            except Exception as e:
-                logger.error(f"failed to connect to rewinddb: {e}")
-                raise Exception(f"database connection error: {str(e)}")
+    return {"transcripts": formatted_sessions}
 
-    def get_transcripts_relative(self, params):
-        """get audio transcripts from a relative time period.
 
-        args:
-            params: dictionary with parameters
+def format_search_results(results: Dict[str, List[Dict]]) -> Dict[str, Any]:
+    """Format search results for MCP response."""
+    formatted_results = {
+        'audio': [],
+        'screen': []
+    }
 
-        returns:
-            formatted transcript data
-        """
+    # Format audio results
+    if results.get('audio'):
+        # Group words by audio session
+        sessions = {}
+        for item in results['audio']:
+            audio_id = item['audio_id']
+            if audio_id not in sessions:
+                sessions[audio_id] = {
+                    'start_time': item['audio_start_time'],
+                    'words': [item],
+                    'hit_indices': [0]
+                }
+            else:
+                sessions[audio_id]['words'].append(item)
+                sessions[audio_id]['hit_indices'].append(len(sessions[audio_id]['words']) - 1)
 
+        # Format each session
+        for audio_id, session in sessions.items():
+            # Sort words by time offset
+            words = sorted(session['words'], key=lambda x: x['time_offset'])
+
+            # Get text and context
+            word_texts = [word['word'] for word in words]
+
+            # For each hit in this session, show context
+            for hit_idx in session['hit_indices']:
+                context_start = max(0, hit_idx - 3)  # 3 words before
+                context_end = min(len(word_texts), hit_idx + 4)  # 3 words after
+
+                # Format the context
+                context_words = word_texts[context_start:context_end]
+                context_text = " ".join(context_words)
+
+                # Add the hit to the results
+                formatted_results['audio'].append({
+                    'time': session['start_time'].isoformat(),
+                    'text': context_text,
+                    'audio_id': audio_id
+                })
+
+    # Format screen results
+    if results.get('screen'):
+        # Group by frame
+        frames = {}
+        for item in results['screen']:
+            frame_id = item['frame_id']
+            if frame_id not in frames:
+                frames[frame_id] = {
+                    'time': item['frame_time'],
+                    'application': item['application'],
+                    'window': item['window'],
+                    'texts': [item['text']]
+                }
+            else:
+                frames[frame_id]['texts'].append(item['text'])
+
+        # Format each frame
+        for frame_id, frame in frames.items():
+            # Ensure frame time is not None before calling isoformat()
+            frame_time = frame['time'].isoformat() if frame['time'] else None
+
+            formatted_results['screen'].append({
+                'time': frame_time,
+                'application': frame['application'],
+                'window': frame['window'],
+                'text': '\n'.join(frame['texts']),
+                'frame_id': frame_id
+            })
+
+    return formatted_results
+
+
+class MCPServer:
+    """MCP Server implementation using JSON-RPC 2.0 over STDIO."""
+
+    def __init__(self, env_file: Optional[str] = None):
+        self.env_file = env_file
+        self.tools = {
+            "get_transcripts_relative": {
+                "description": "Get audio transcripts from a relative time period",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "time_period": {
+                            "type": "string",
+                            "description": "Time period like '1hour', '30minutes', '1day'",
+                            "pattern": r"^\d+(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
+                        }
+                    },
+                    "required": ["time_period"]
+                }
+            },
+            "search_transcripts": {
+                "description": "Search through audio transcripts for keywords",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "keyword": {
+                            "type": "string",
+                            "description": "Keyword to search for"
+                        },
+                        "relative": {
+                            "type": "string",
+                            "description": "Optional relative time period like '1hour', '1day'",
+                            "pattern": r"^\d+(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
+                        },
+                        "from": {
+                            "type": "string",
+                            "description": "Optional start time in ISO format"
+                        },
+                        "to": {
+                            "type": "string",
+                            "description": "Optional end time in ISO format"
+                        }
+                    },
+                    "required": ["keyword"]
+                }
+            },
+            "get_activity_stats": {
+                "description": "Get activity statistics for a time period",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "time_period": {
+                            "type": "string",
+                            "description": "Time period like '1hour', '30minutes', '1day'",
+                            "pattern": r"^\d+(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
+                        }
+                    },
+                    "required": ["time_period"]
+                }
+            },
+            "get_transcript_by_id": {
+                "description": "Get a specific transcript by audio ID",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "audio_id": {
+                            "type": "integer",
+                            "description": "The audio ID to retrieve"
+                        }
+                    },
+                    "required": ["audio_id"]
+                }
+            },
+            "search_screen_ocr": {
+                "description": "Search through OCR screen content for keywords",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "keyword": {
+                            "type": "string",
+                            "description": "Keyword to search for in screen OCR content"
+                        },
+                        "relative": {
+                            "type": "string",
+                            "description": "Optional relative time period like '1hour', '1day'",
+                            "pattern": r"^\d+(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
+                        },
+                        "from": {
+                            "type": "string",
+                            "description": "Optional start time in ISO format"
+                        },
+                        "to": {
+                            "type": "string",
+                            "description": "Optional end time in ISO format"
+                        },
+                        "application": {
+                            "type": "string",
+                            "description": "Optional application name to filter results"
+                        }
+                    },
+                    "required": ["keyword"]
+                }
+            }
+        }
+
+        self.resources = {
+            "rewinddb://transcripts": {
+                "name": "Audio Transcripts",
+                "description": "Access to audio transcript data",
+                "mimeType": "application/json"
+            },
+            "rewinddb://activity": {
+                "name": "Activity Data",
+                "description": "Access to computer activity data",
+                "mimeType": "application/json"
+            }
+        }
+
+    async def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle incoming JSON-RPC 2.0 request."""
         try:
-            # validate parameters
-            params_obj = RelativeTimeParams(params["time_period"])
+            method = request.get("method")
+            params = request.get("params", {})
+            request_id = request.get("id")
 
-            # parse relative time
-            time_components = parse_relative_time(params_obj.time_period)
+            logger.info(f"Handling request: {method}")
 
-            # get transcripts
-            transcripts = self.db.get_audio_transcripts_relative(**time_components)
-            return self.format_transcripts(transcripts)
+            if method == "initialize":
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {
+                            "tools": {},
+                            "resources": {}
+                        },
+                        "serverInfo": {
+                            "name": "rewinddb-mcp",
+                            "version": "1.0.0"
+                        }
+                    }
+                }
+
+            elif method == "notifications/initialized":
+                # No response needed for notification
+                return None
+
+            elif method == "tools/list":
+                tools_list = []
+                for name, tool_def in self.tools.items():
+                    tools_list.append({
+                        "name": name,
+                        "description": tool_def["description"],
+                        "inputSchema": tool_def["inputSchema"]
+                    })
+
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "tools": tools_list
+                    }
+                }
+
+            elif method == "tools/call":
+                tool_name = params.get("name")
+                arguments = params.get("arguments", {})
+
+                result = await self.call_tool(tool_name, arguments)
+
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": result
+                            }
+                        ]
+                    }
+                }
+
+            elif method == "resources/list":
+                resources_list = []
+                for uri, resource_def in self.resources.items():
+                    resources_list.append({
+                        "uri": uri,
+                        "name": resource_def["name"],
+                        "description": resource_def["description"],
+                        "mimeType": resource_def["mimeType"]
+                    })
+
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "resources": resources_list
+                    }
+                }
+
+            elif method == "resources/read":
+                uri = params.get("uri")
+                result = await self.get_resource(uri)
+
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "contents": [
+                            {
+                                "uri": uri,
+                                "mimeType": "text/plain",
+                                "text": result
+                            }
+                        ]
+                    }
+                }
+
+            else:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32601,
+                        "message": f"Method not found: {method}"
+                    }
+                }
+
         except Exception as e:
-            logger.error(f"error getting transcripts: {e}", exc_info=True)
-            raise Exception(f"error getting transcripts: {str(e)}")
+            logger.error(f"Error handling request: {e}", exc_info=True)
+            return {
+                "jsonrpc": "2.0",
+                "id": request.get("id"),
+                "error": {
+                    "code": -32603,
+                    "message": f"Internal error: {str(e)}"
+                }
+            }
 
-    def get_transcripts_absolute(self, params):
-        """get audio transcripts from a specific time range.
+    async def call_tool(self, name: str, arguments: Dict[str, Any]) -> str:
+        """Handle tool calls."""
+        db = ensure_db_connection(self.env_file)
 
-        args:
-            params: dictionary with parameters
+        if name == "get_transcripts_relative":
+            time_period = arguments["time_period"]
 
-        returns:
-            formatted transcript data
-        """
+            # Validate time period format
+            pattern = r"^(\d+)(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
+            if not re.match(pattern, time_period):
+                raise ValueError("time_period must be in format like '1hour', '30minutes', '1day'")
 
-        try:
-            # validate parameters
-            from_time = datetime.datetime.fromisoformat(params["from"])
-            to_time = datetime.datetime.fromisoformat(params["to"])
-            params_obj = AbsoluteTimeParams(from_time, to_time)
+            # Parse relative time
+            time_components = parse_relative_time(time_period)
 
-            # get transcripts
-            transcripts = self.db.get_audio_transcripts_absolute(
-                params_obj.from_time, params_obj.to_time
-            )
-            return self.format_transcripts(transcripts)
-        except Exception as e:
-            logger.error(f"error getting transcripts: {e}", exc_info=True)
-            raise Exception(f"error getting transcripts: {str(e)}")
+            # Get transcripts
+            transcripts = db.get_audio_transcripts_relative(**time_components)
+            formatted = format_transcripts(transcripts)
 
-    def search(self, params):
-        """search for keywords across both audio and screen data.
+            result = f"Found {len(formatted['transcripts'])} transcript sessions in the last {time_period}:\n\n"
+            for i, session in enumerate(formatted['transcripts'][:5]):  # Show first 5
+                result += f"Session {i+1} (Audio ID: {session['audio_id']}):\n"
+                result += f"Time: {session['start_time']}\n"
+                result += f"Text: {session['text'][:200]}{'...' if len(session['text']) > 200 else ''}\n\n"
 
-        args:
-            params: dictionary with parameters
+            return result
 
-        returns:
-            formatted search results
-        """
+        elif name == "search_transcripts":
+            keyword = arguments["keyword"]
+            relative = arguments.get("relative")
+            from_time = arguments.get("from")
+            to_time = arguments.get("to")
 
-        try:
-            # validate parameters
-            keyword = params["keyword"]
-            relative = params.get("relative")
-            from_time = params.get("from")
-            to_time = params.get("to")
-
+            # Convert string times to datetime if provided
             if from_time:
                 from_time = datetime.datetime.fromisoformat(from_time)
             if to_time:
                 to_time = datetime.datetime.fromisoformat(to_time)
 
-            params_obj = SearchParams(keyword, relative, from_time, to_time)
-
-            # perform search based on parameters
-            if params_obj.relative:
-                # search with relative time
-                time_components = parse_relative_time(params_obj.relative)
+            # Perform search based on parameters
+            if relative:
+                # Search with relative time
+                time_components = parse_relative_time(relative)
                 days = (
                     time_components["days"] +
                     time_components["hours"] / 24 +
                     time_components["minutes"] / (24 * 60) +
                     time_components["seconds"] / (24 * 60 * 60)
                 )
-                results = self.db.search(params_obj.keyword, days=days)
-            elif params_obj.from_time and params_obj.to_time:
-                # search with absolute time range
-                # get audio transcripts for the time range
-                audio_transcripts = self.db.get_audio_transcripts_absolute(
-                    params_obj.from_time, params_obj.to_time
-                )
+                results = db.search(keyword, days=days)
+            elif from_time and to_time:
+                # Search with absolute time range
+                audio_transcripts = db.get_audio_transcripts_absolute(from_time, to_time)
+                screen_ocr = db.get_screen_ocr_absolute(from_time, to_time)
 
-                # get screen ocr for the time range
-                screen_ocr = self.db.get_screen_ocr_absolute(
-                    params_obj.from_time, params_obj.to_time
-                )
-
-                # filter results for the keyword
+                # Filter results for the keyword
                 audio_results = [
                     item for item in audio_transcripts
-                    if params_obj.keyword.lower() in item['word'].lower()
+                    if keyword.lower() in item['word'].lower()
                 ]
 
                 screen_results = [
                     item for item in screen_ocr
-                    if params_obj.keyword.lower() in item['text'].lower()
+                    if keyword.lower() in item.get('text', '').lower()
                 ]
 
                 results = {
@@ -403,871 +509,272 @@ class MCPStdioServer:
                     'screen': screen_results
                 }
             else:
-                # default to 7 days if no time range specified
-                results = self.db.search(params_obj.keyword)
+                # Default to 7 days if no time range specified
+                results = db.search(keyword)
 
-            return self.format_search_results(results)
-        except Exception as e:
-            logger.error(f"error searching: {e}", exc_info=True)
-            raise Exception(f"error searching: {str(e)}")
+            formatted = format_search_results(results)
 
-    def get_screenshot(self, params):
-        """get a single screenshot by frame id.
+            audio_count = len(formatted['audio'])
+            screen_count = len(formatted['screen'])
 
-        args:
-            params: dictionary with parameters
+            response_text = f"Search results for '{keyword}':\n"
+            response_text += f"Found {audio_count} audio matches and {screen_count} screen matches\n\n"
 
-        returns:
-            formatted screenshot data
-        """
+            if formatted['audio']:
+                response_text += "Audio matches:\n"
+                for i, match in enumerate(formatted['audio'][:3]):  # Show first 3
+                    response_text += f"{i+1}. {match['time']}: {match['text']}\n"
+                if audio_count > 3:
+                    response_text += f"... and {audio_count - 3} more audio matches\n"
+                response_text += "\n"
 
-        try:
-            # validate parameters
-            frame_id = params["frame_id"]
-            params_obj = ScreenshotByIdParams(frame_id)
+            if formatted['screen']:
+                response_text += "Screen matches:\n"
+                for i, match in enumerate(formatted['screen'][:3]):  # Show first 3
+                    response_text += f"{i+1}. {match['time']} ({match['application']}): {match['text'][:100]}...\n"
+                if screen_count > 3:
+                    response_text += f"... and {screen_count - 3} more screen matches\n"
 
-            # get screenshot
-            screenshot = self.db.get_screenshot_by_id(params_obj.frame_id)
-            if not screenshot:
-                logger.warning(f"screenshot with id {params_obj.frame_id} not found")
-                raise Exception(f"screenshot with id {params_obj.frame_id} not found")
+            return response_text
 
-            return self.format_screenshot(screenshot)
-        except Exception as e:
-            logger.error(f"error getting screenshot: {e}", exc_info=True)
-            raise Exception(f"error getting screenshot: {str(e)}")
+        elif name == "get_activity_stats":
+            time_period = arguments["time_period"]
 
-    def get_screenshots_relative(self, params):
-        """get screenshots from a relative time period.
+            # Validate time period format
+            pattern = r"^(\d+)(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
+            if not re.match(pattern, time_period):
+                raise ValueError("time_period must be in format like '1hour', '30minutes', '1day'")
 
-        args:
-            params: dictionary with parameters
+            # Parse relative time
+            time_components = parse_relative_time(time_period)
 
-        returns:
-            formatted screenshots data
-        """
+            # Get statistics
+            stats = db.get_statistics(**time_components)
 
-        try:
-            # validate parameters
-            time_period = params["time_period"]
-            limit = params.get("limit", 100)
-            params_obj = ScreenshotsRelativeParams(time_period, limit)
+            response_text = f"Activity statistics for the last {time_period}:\n\n"
+            response_text += f"Audio:\n"
+            response_text += f"- Total audio records: {stats['audio']['total_audio']}\n"
+            response_text += f"- Total words: {stats['audio']['total_words']}\n"
+            if 'relative_count' in stats['audio']:
+                response_text += f"- Words in period: {stats['audio']['relative_count']}\n"
+            response_text += f"\nScreen:\n"
+            response_text += f"- Total frames: {stats['screen']['total_frames']}\n"
+            response_text += f"- Total nodes: {stats['screen']['total_nodes']}\n"
+            if 'relative_count' in stats['screen']:
+                response_text += f"- Nodes in period: {stats['screen']['relative_count']}\n"
+            response_text += f"\nApp Usage:\n"
+            response_text += f"- Total apps: {stats['app_usage']['total_apps']}\n"
+            response_text += f"- Total hours: {stats['app_usage']['total_hours']}\n"
 
-            # parse relative time
-            time_components = parse_relative_time(params_obj.time_period)
+            if stats['app_usage']['top_apps']:
+                response_text += f"\nTop apps:\n"
+                for app in stats['app_usage']['top_apps'][:5]:
+                    response_text += f"- {app['app']}: {app['hours']} hours ({app['percentage']}%)\n"
 
-            # get screenshots
-            screenshots = self.db.get_screenshots_relative(**time_components, limit=params_obj.limit)
-            return self.format_screenshots(screenshots)
-        except Exception as e:
-            logger.error(f"error getting screenshots: {e}", exc_info=True)
-            raise Exception(f"error getting screenshots: {str(e)}")
+            return response_text
 
-    def get_screenshots_absolute(self, params):
-        """get screenshots from a specific time range.
+        elif name == "get_transcript_by_id":
+            audio_id = arguments["audio_id"]
 
-        args:
-            params: dictionary with parameters
+            # Get transcripts for this specific audio ID
+            # We'll search for transcripts and filter by audio_id
+            transcripts = db.get_audio_transcripts_relative(days=30)  # Look back 30 days
 
-        returns:
-            formatted screenshots data
-        """
+            # Filter by audio_id
+            matching_transcripts = [t for t in transcripts if t['audio_id'] == audio_id]
 
-        try:
-            # validate parameters
-            from_time = datetime.datetime.fromisoformat(params["from"])
-            to_time = datetime.datetime.fromisoformat(params["to"])
-            limit = params.get("limit", 100)
-            params_obj = ScreenshotsAbsoluteParams(from_time, to_time, limit)
+            if not matching_transcripts:
+                return f"No transcript found for audio ID {audio_id}"
 
-            # get screenshots
-            screenshots = self.db.get_screenshots_absolute(
-                params_obj.from_time, params_obj.to_time, limit=params_obj.limit
-            )
-            return self.format_screenshots(screenshots)
-        except Exception as e:
-            logger.error(f"error getting screenshots: {e}", exc_info=True)
-            raise Exception(f"error getting screenshots: {str(e)}")
+            formatted = format_transcripts(matching_transcripts)
 
-    def get_active_hours_relative(self, params):
-        """get active computer usage hours from a relative time period.
+            if formatted['transcripts']:
+                session = formatted['transcripts'][0]
+                response_text = f"Transcript for Audio ID {audio_id}:\n\n"
+                response_text += f"Time: {session['start_time']}\n"
+                response_text += f"Text: {session['text']}\n\n"
+                response_text += f"Word-by-word breakdown:\n"
+                for word in session['words'][:20]:  # Show first 20 words
+                    response_text += f"- {word['word']} ({word['time']})\n"
+                if len(session['words']) > 20:
+                    response_text += f"... and {len(session['words']) - 20} more words\n"
+            else:
+                response_text = f"No transcript data found for audio ID {audio_id}"
 
-        args:
-            params: dictionary with parameters
+            return response_text
 
-        returns:
-            formatted active hours data
-        """
+        elif name == "search_screen_ocr":
+            keyword = arguments["keyword"]
+            relative = arguments.get("relative")
+            from_time = arguments.get("from")
+            to_time = arguments.get("to")
+            application = arguments.get("application")
 
-        try:
-            # validate parameters
-            time_period = params["time_period"]
-            params_obj = ActiveHoursRelativeParams(time_period)
+            # Convert string times to datetime if provided
+            if from_time:
+                from_time = datetime.datetime.fromisoformat(from_time)
+            if to_time:
+                to_time = datetime.datetime.fromisoformat(to_time)
 
-            # parse relative time
-            time_components = parse_relative_time(params_obj.time_period)
+            # Perform search based on parameters
+            if relative:
+                # Search with relative time
+                time_components = parse_relative_time(relative)
+                days = (
+                    time_components["days"] +
+                    time_components["hours"] / 24 +
+                    time_components["minutes"] / (24 * 60) +
+                    time_components["seconds"] / (24 * 60 * 60)
+                )
+                results = db.search(keyword, days=days)
+            elif from_time and to_time:
+                # Search with absolute time range
+                screen_ocr = db.get_screen_ocr_absolute(from_time, to_time)
 
-            # get active hours
-            active_hours = self.db.get_active_hours(**time_components)
-            return self.format_active_hours(active_hours)
-        except Exception as e:
-            logger.error(f"error getting active hours: {e}", exc_info=True)
-            raise Exception(f"error getting active hours: {str(e)}")
-
-    def get_active_hours_absolute(self, params):
-        """get active computer usage hours from a specific time range.
-
-        args:
-            params: dictionary with parameters
-
-        returns:
-            formatted active hours data
-        """
-
-        try:
-            # validate parameters
-            from_time = datetime.datetime.fromisoformat(params["from"])
-            to_time = datetime.datetime.fromisoformat(params["to"])
-            params_obj = ActiveHoursAbsoluteParams(from_time, to_time)
-
-            # get active hours
-            active_hours = self.db.get_active_hours(start_time=params_obj.from_time, end_time=params_obj.to_time)
-            return self.format_active_hours(active_hours)
-        except Exception as e:
-            logger.error(f"error getting active hours: {e}", exc_info=True)
-            raise Exception(f"error getting active hours: {str(e)}")
-
-    def get_app_usage_relative(self, params):
-        """get detailed app usage statistics from a relative time period.
-
-        args:
-            params: dictionary with parameters
-
-        returns:
-            formatted app usage data
-        """
-
-        try:
-            # validate parameters
-            time_period = params["time_period"]
-            params_obj = AppUsageRelativeParams(time_period)
-
-            # parse relative time
-            time_components = parse_relative_time(params_obj.time_period)
-
-            # get app usage
-            app_usage = self.db.get_app_usage(**time_components)
-            return self.format_app_usage(app_usage)
-        except Exception as e:
-            logger.error(f"error getting app usage: {e}", exc_info=True)
-            raise Exception(f"error getting app usage: {str(e)}")
-
-    def get_app_usage_absolute(self, params):
-        """get detailed app usage statistics from a specific time range.
-
-        args:
-            params: dictionary with parameters
-
-        returns:
-            formatted app usage data
-        """
-
-        try:
-            # validate parameters
-            from_time = datetime.datetime.fromisoformat(params["from"])
-            to_time = datetime.datetime.fromisoformat(params["to"])
-            params_obj = AppUsageAbsoluteParams(from_time, to_time)
-
-            # get app usage
-            app_usage = self.db.get_app_usage(start_time=params_obj.from_time, end_time=params_obj.to_time)
-            return self.format_app_usage(app_usage)
-        except Exception as e:
-            logger.error(f"error getting app usage: {e}", exc_info=True)
-            raise Exception(f"error getting app usage: {str(e)}")
-
-    def get_meetings_relative(self, params):
-        """get calendar events/meetings from a relative time period.
-
-        args:
-            params: dictionary with parameters
-
-        returns:
-            formatted meetings data
-        """
-
-        try:
-            # validate parameters
-            time_period = params["time_period"]
-            params_obj = MeetingsRelativeParams(time_period)
-
-            # parse relative time
-            time_components = parse_relative_time(params_obj.time_period)
-
-            # get meetings
-            meetings = self.db.get_meetings(**time_components)
-            return self.format_meetings(meetings)
-        except Exception as e:
-            logger.error(f"error getting meetings: {e}", exc_info=True)
-            raise Exception(f"error getting meetings: {str(e)}")
-
-    def get_meetings_absolute(self, params):
-        """get calendar events/meetings from a specific time range.
-
-        args:
-            params: dictionary with parameters
-
-        returns:
-            formatted meetings data
-        """
-
-        try:
-            # validate parameters
-            from_time = datetime.datetime.fromisoformat(params["from"])
-            to_time = datetime.datetime.fromisoformat(params["to"])
-            params_obj = MeetingsAbsoluteParams(from_time, to_time)
-
-            # get meetings
-            meetings = self.db.get_meetings(start_time=params_obj.from_time, end_time=params_obj.to_time)
-            return self.format_meetings(meetings)
-        except Exception as e:
-            logger.error(f"error getting meetings: {e}", exc_info=True)
-            raise Exception(f"error getting meetings: {str(e)}")
-
-    def format_transcripts(self, transcripts):
-        """format transcript data for api response.
-
-        args:
-            transcripts: list of transcript dictionaries from rewinddb
-
-        returns:
-            formatted transcript data suitable for genai models
-        """
-
-        if not transcripts:
-            return {"transcripts": []}
-
-        # group words by audio session
-        sessions = {}
-        for item in transcripts:
-            audio_id = item['audio_id']
-            if audio_id not in sessions:
-                sessions[audio_id] = {
-                    'start_time': item['audio_start_time'],
-                    'words': []
-                }
-            sessions[audio_id]['words'].append(item)
-
-        # format each session
-        formatted_sessions = []
-        for audio_id, session in sessions.items():
-            # sort words by time offset
-            words = sorted(session['words'], key=lambda x: x['time_offset'])
-
-            # extract text and timestamps
-            formatted_session = {
-                'start_time': session['start_time'].isoformat(),
-                'audio_id': audio_id,
-                'text': ' '.join(word['word'] for word in words),
-                'words': [
-                    {
-                        'word': word['word'],
-                        'time': (session['start_time'] + datetime.timedelta(milliseconds=word['time_offset'])).isoformat(),
-                        'duration': word.get('duration', 0)
-                    }
-                    for word in words
+                # Filter results for the keyword
+                screen_results = [
+                    item for item in screen_ocr
+                    if keyword.lower() in item.get('text', '').lower()
                 ]
-            }
 
-            formatted_sessions.append(formatted_session)
-
-        return {"transcripts": formatted_sessions}
-
-    def format_search_results(self, results):
-        """format search results for api response.
-
-        args:
-            results: search results dictionary from rewinddb
-
-        returns:
-            formatted search results suitable for genai models
-        """
-
-        formatted_results = {
-            'audio': [],
-            'screen': []
-        }
-
-        # format audio results
-        if results['audio']:
-            # group words by audio session
-            sessions = {}
-            for item in results['audio']:
-                audio_id = item['audio_id']
-                if audio_id not in sessions:
-                    sessions[audio_id] = {
-                        'start_time': item['audio_start_time'],
-                        'words': [item],
-                        'hit_indices': [0]  # index of the hit word in this session's words list
-                    }
-                else:
-                    sessions[audio_id]['words'].append(item)
-                    sessions[audio_id]['hit_indices'].append(len(sessions[audio_id]['words']) - 1)
-
-            # format each session
-            for audio_id, session in sessions.items():
-                # sort words by time offset
-                words = sorted(session['words'], key=lambda x: x['time_offset'])
-
-                # get text and context
-                word_texts = [word['word'] for word in words]
-
-                # for each hit in this session, show context
-                for hit_idx in session['hit_indices']:
-                    context_start = max(0, hit_idx - 3)  # 3 words before
-                    context_end = min(len(word_texts), hit_idx + 4)  # 3 words after
-
-                    # format the context
-                    context_words = word_texts[context_start:context_end]
-                    context_text = " ".join(context_words)
-
-                    # add the hit to the results
-                    formatted_results['audio'].append({
-                        'time': session['start_time'].isoformat(),
-                        'text': context_text,
-                        'audio_id': audio_id
-                    })
-
-        # format screen results
-        if results['screen']:
-            # group by frame
-            frames = {}
-            for item in results['screen']:
-                frame_id = item['frame_id']
-                if frame_id not in frames:
-                    frames[frame_id] = {
-                        'time': item['frame_time'],
-                        'application': item['application'],
-                        'window': item['window'],
-                        'texts': [item['text']]
-                    }
-                else:
-                    frames[frame_id]['texts'].append(item['text'])
-
-            # format each frame
-            for frame_id, frame in frames.items():
-                # ensure frame time is not None before calling isoformat()
-                frame_time = frame['time'].isoformat() if frame['time'] else None
-
-                formatted_results['screen'].append({
-                    'time': frame_time,
-                    'application': frame['application'],
-                    'window': frame['window'],
-                    'text': '\n'.join(frame['texts']),
-                    'frame_id': frame_id
-                })
-
-        return formatted_results
-
-    def get_image_path(self, image_file: str) -> typing.Optional[str]:
-        """get the full path to an image file.
-
-        args:
-            image_file: the image file name from the database
-
-        returns:
-            the full path to the image file or none if not found
-        """
-
-        # check if the image file is a valid path
-        if not image_file:
-            return None
-
-        # get the rewind data directory from the database path
-        db_path = self.db.db_path
-        data_dir = os.path.dirname(os.path.dirname(db_path))
-
-        # construct the path to the image file
-        # image files are stored in chunks directory with a specific structure
-        # the exact path depends on the image_file format
-
-        # try different possible locations
-        possible_paths = [
-            # direct path if image_file is a full path
-            image_file,
-            # path relative to data directory
-            os.path.join(data_dir, image_file),
-            # path in chunks directory
-            os.path.join(data_dir, "chunks", image_file)
-        ]
-
-        # check if any of the paths exist
-        for path in possible_paths:
-            if os.path.exists(path):
-                return path
-
-        # if no path exists, log a warning and return none
-        logger.warning(f"image file not found: {image_file}")
-        return None
-
-    def encode_image_base64(self, image_path: str) -> typing.Optional[str]:
-        """encode an image file as base64.
-
-        args:
-            image_path: path to the image file
-
-        returns:
-            base64 encoded image or none if file not found
-        """
-
-        if not image_path or not os.path.exists(image_path):
-            return None
-
-        try:
-            with open(image_path, "rb") as image_file:
-                encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
-
-            # determine the mime type based on file extension
-            file_ext = os.path.splitext(image_path)[1].lower()
-            mime_type = "image/jpeg"  # default
-
-            if file_ext == ".png":
-                mime_type = "image/png"
-            elif file_ext in [".jpg", ".jpeg"]:
-                mime_type = "image/jpeg"
-            elif file_ext == ".gif":
-                mime_type = "image/gif"
-            elif file_ext == ".webp":
-                mime_type = "image/webp"
-
-            # return data url format
-            return f"data:{mime_type};base64,{encoded_string}"
-        except Exception as e:
-            logger.error(f"error encoding image: {e}")
-            return None
-
-    def format_screenshot(self, screenshot: dict) -> dict:
-        """format a single screenshot for api response.
-
-        args:
-            screenshot: screenshot dictionary from rewinddb
-
-        returns:
-            formatted screenshot data suitable for genai models
-        """
-
-        if not screenshot:
-            return {"screenshot": None}
-
-        # get the image path
-        image_path = self.get_image_path(screenshot.get('image_file'))
-
-        # encode the image as base64
-        image_data = self.encode_image_base64(image_path) if image_path else None
-
-        # format the result
-        result = {
-            "screenshot": {
-                "frame_id": screenshot.get('frame_id'),
-                "time": screenshot.get('frame_time').isoformat(),
-                "application": screenshot.get('application'),
-                "window": screenshot.get('window'),
-                "image_data": image_data
-            }
-        }
-
-        return result
-
-    def format_screenshots(self, screenshots: typing.List[dict]) -> dict:
-        """format multiple screenshots for api response.
-
-        args:
-            screenshots: list of screenshot dictionaries from rewinddb
-
-        returns:
-            formatted screenshots data suitable for genai models
-        """
-
-        if not screenshots:
-            return {"screenshots": []}
-
-        formatted_screenshots = []
-
-        for screenshot in screenshots:
-            # get the image path
-            image_path = self.get_image_path(screenshot.get('image_file'))
-
-            # encode the image as base64
-            image_data = self.encode_image_base64(image_path) if image_path else None
-
-            # format the screenshot
-            formatted_screenshot = {
-                "frame_id": screenshot.get('frame_id'),
-                "time": screenshot.get('frame_time').isoformat(),
-                "application": screenshot.get('application'),
-                "window": screenshot.get('window'),
-                "image_data": image_data
-            }
-
-            formatted_screenshots.append(formatted_screenshot)
-
-        return {"screenshots": formatted_screenshots}
-
-    def format_active_hours(self, active_hours: dict) -> dict:
-        """format active hours data for api response.
-
-        args:
-            active_hours: dictionary with active hours data from get_active_hours()
-
-        returns:
-            formatted active hours data suitable for genai models
-        """
-
-        if not active_hours:
-            return {"active_hours": {}}
-
-        # format hourly activity
-        hourly_activity = [
-            {
-                "hour": item["hour"],
-                "hours_active": item["hours"],
-                "seconds_active": item["seconds"]
-            }
-            for item in active_hours["hourly_activity"]
-        ]
-
-        # format daily activity
-        daily_activity = [
-            {
-                "date": item["date"],
-                "hours_active": item["hours"],
-                "seconds_active": item["seconds"]
-            }
-            for item in active_hours["daily_activity"]
-        ]
-
-        # format active periods
-        active_periods = [
-            {
-                "start_time": period["start"].isoformat(),
-                "end_time": period["end"].isoformat(),
-                "duration_seconds": period["duration_seconds"],
-                "duration_minutes": round(period["duration_seconds"] / 60, 2)
-            }
-            for period in active_hours["active_periods"]
-        ]
-
-        return {
-            "active_hours": {
-                "total_active_hours": active_hours["total_active_hours"],
-                "total_active_seconds": active_hours["total_active_seconds"],
-                "session_count": active_hours["session_count"],
-                "avg_session_minutes": active_hours["avg_session_minutes"],
-                "avg_session_seconds": active_hours["avg_session_seconds"],
-                "hourly_activity": hourly_activity,
-                "daily_activity": daily_activity,
-                "active_periods": active_periods,
-                "time_range": {
-                    "start": active_hours["time_range"]["start"].isoformat(),
-                    "end": active_hours["time_range"]["end"].isoformat()
+                results = {
+                    'audio': [],
+                    'screen': screen_results
                 }
+            else:
+                # Default to 7 days if no time range specified
+                results = db.search(keyword)
+
+            # Filter by application if specified
+            if application and results.get('screen'):
+                results['screen'] = [
+                    item for item in results['screen']
+                    if application.lower() in item.get('application', '').lower()
+                ]
+
+            # Only keep screen results for this tool
+            screen_only_results = {
+                'audio': [],
+                'screen': results.get('screen', [])
             }
-        }
 
-    def format_app_usage(self, app_usage: dict) -> dict:
-        """format app usage data for api response.
+            formatted = format_search_results(screen_only_results)
+            screen_count = len(formatted['screen'])
 
-        args:
-            app_usage: dictionary with app usage data from get_app_usage()
+            response_text = f"Screen OCR search results for '{keyword}':\n"
+            response_text += f"Found {screen_count} screen matches\n\n"
 
-        returns:
-            formatted app usage data suitable for genai models
-        """
+            if formatted['screen']:
+                response_text += "Screen matches:\n"
+                for i, match in enumerate(formatted['screen'][:10]):  # Show first 10
+                    app_info = f" ({match['application']})" if match['application'] else ""
+                    window_info = f" - {match['window']}" if match['window'] else ""
+                    response_text += f"{i+1}. {match['time']}{app_info}{window_info}:\n"
+                    response_text += f"   {match['text'][:200]}{'...' if len(match['text']) > 200 else ''}\n\n"
+                if screen_count > 10:
+                    response_text += f"... and {screen_count - 10} more screen matches\n"
+            else:
+                response_text += "No screen OCR matches found.\n"
 
-        if not app_usage:
-            return {"app_usage": {}}
+            return response_text
 
-        # format top apps
-        top_apps = [
-            {
-                "name": app["name"],
-                "hours": app["hours"],
-                "percentage": app["percentage"],
-                "window_count": app.get("window_count", 0),
-                "top_windows": app.get("top_windows", [])
-            }
-            for app in app_usage["top_apps"]
-        ]
+        else:
+            raise ValueError(f"Unknown tool: {name}")
 
-        # format top urls
-        top_urls = [
-            {
-                "url": url["url"],
-                "hours": url["hours"],
-                "percentage": url["percentage"]
-            }
-            for url in app_usage.get("top_urls", [])
-        ]
+    async def get_resource(self, uri: str) -> str:
+        """Get a resource by URI."""
+        db = ensure_db_connection(self.env_file)
 
-        # format hourly activity
-        hourly_activity = [
-            {
-                "hour": item["hour"],
-                "hours": item["hours"],
-                "percentage": item["percentage"]
-            }
-            for item in app_usage["hourly_activity"]
-        ]
+        if uri == "rewinddb://transcripts":
+            # Get recent transcripts (last hour)
+            transcripts = db.get_audio_transcripts_relative(hours=1)
+            formatted = format_transcripts(transcripts)
 
-        return {
-            "app_usage": {
-                "total_apps": app_usage["total_apps"],
-                "total_windows": app_usage.get("total_windows", 0),
-                "total_urls": app_usage.get("total_urls", 0),
-                "total_hours": app_usage["total_hours"],
-                "top_apps": top_apps,
-                "top_urls": top_urls,
-                "hourly_activity": hourly_activity,
-                "time_range": {
-                    "start": app_usage["time_range"]["start"].isoformat(),
-                    "end": app_usage["time_range"]["end"].isoformat()
-                }
-            }
-        }
+            return f"Recent transcripts (last hour): {len(formatted['transcripts'])} sessions found"
 
-    def format_meetings(self, meetings: dict) -> dict:
-        """format meetings data for api response.
+        elif uri == "rewinddb://activity":
+            # Get recent activity stats
+            stats = db.get_statistics(hours=1)
 
-        args:
-            meetings: dictionary with meetings data from get_meetings()
+            return f"Activity stats: {stats['audio']['total_audio']} audio records, {stats['screen']['total_frames']} screen frames"
 
-        returns:
-            formatted meetings data suitable for genai models
-        """
+        else:
+            raise ValueError(f"Unknown resource URI: {uri}")
 
-        if not meetings:
-            return {"meetings": {}}
+    async def run(self):
+        """Run the MCP server."""
+        logger.info("Starting MCP STDIO server")
 
-        # format calendar stats
-        calendar_stats = [
-            {
-                "calendar": cal["calendar"],
-                "event_count": cal["event_count"],
-                "hours": cal["hours"],
-                "percentage": cal["percentage"]
-            }
-            for cal in meetings.get("calendar_stats", [])
-        ]
+        # Initialize database connection
+        ensure_db_connection(self.env_file)
 
-        # format daily meeting hours
-        daily_meeting_hours = [
-            {
-                "date": day["date"],
-                "hours": day["hours"],
-                "seconds": day["seconds"]
-            }
-            for day in meetings.get("daily_meeting_hours", [])
-        ]
-
-        # format hourly distribution
-        hourly_distribution = [
-            {
-                "hour": hour["hour"],
-                "hours": hour["hours"],
-                "seconds": hour["seconds"]
-            }
-            for hour in meetings.get("hourly_distribution", [])
-        ]
-
-        # format events
-        events = [
-            {
-                "title": event.get("title", "Untitled"),
-                "start_time": event["start_time"].isoformat(),
-                "end_time": event["end_time"].isoformat(),
-                "duration_seconds": event["duration_seconds"],
-                "duration_minutes": round(event["duration_seconds"] / 60, 2),
-                "calendar": event.get("calendar", "Unknown"),
-                "location": event.get("location", ""),
-                "is_all_day": event.get("is_all_day", False)
-            }
-            for event in meetings.get("events", [])
-        ]
-
-        return {
-            "meetings": {
-                "total_events": meetings["total_events"],
-                "total_hours": meetings["total_hours"],
-                "total_seconds": meetings["total_seconds"],
-                "avg_meeting_minutes": meetings["avg_meeting_minutes"],
-                "avg_meeting_seconds": meetings["avg_meeting_seconds"],
-                "calendar_stats": calendar_stats,
-                "daily_meeting_hours": daily_meeting_hours,
-                "hourly_distribution": hourly_distribution,
-                "events": events,
-                "time_range": {
-                    "start": meetings["time_range"]["start"].isoformat(),
-                    "end": meetings["time_range"]["end"].isoformat()
-                }
-            }
-        }
-
-    def run(self):
-        """run the server using stdio for communication."""
-
-        # ensure database connection
-        self.ensure_db_connection()
-
-        # print server info
-        logger.info("mcp stdio server started")
-        logger.info(f"available tools: {list(self.tools.keys())}")
-
-        # print initial message to stdout
-        print(json.dumps({
-            "type": "server_info",
-            "name": "RewindDB MCP Server",
-            "version": "0.1.0",
-            "tools": list(self.tools.keys())
-        }))
-        sys.stdout.flush()
-
-        # main loop
         try:
             while True:
-                # read a line from stdin
-                line = sys.stdin.readline().strip()
+                # Read JSON-RPC message from stdin
+                line = await asyncio.get_event_loop().run_in_executor(None, sys.stdin.readline)
+                if not line:
+                    break
+
+                line = line.strip()
                 if not line:
                     continue
 
-                # parse the request
                 try:
                     request = json.loads(line)
+                    logger.debug(f"Received request: {request}")
+
+                    response = await self.handle_request(request)
+
+                    if response is not None:
+                        response_json = json.dumps(response)
+                        print(response_json)
+                        sys.stdout.flush()
+                        logger.debug(f"Sent response: {response_json}")
+
                 except json.JSONDecodeError as e:
-                    logger.error(f"invalid json: {e}")
-                    print(json.dumps({
-                        "type": "error",
-                        "error": f"invalid json: {str(e)}"
-                    }))
+                    logger.error(f"Invalid JSON: {e}")
+                    error_response = {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {
+                            "code": -32700,
+                            "message": "Parse error"
+                        }
+                    }
+                    print(json.dumps(error_response))
                     sys.stdout.flush()
-                    continue
 
-                # handle the request
-                if request.get("type") == "tool_call":
-                    self.handle_tool_call(request)
-                elif request.get("type") == "ping":
-                    print(json.dumps({
-                        "type": "pong",
-                        "id": request.get("id")
-                    }))
-                    sys.stdout.flush()
-                elif request.get("type") == "shutdown":
-                    logger.info("shutdown requested")
-                    break
-                else:
-                    logger.warning(f"unknown request type: {request.get('type')}")
-                    print(json.dumps({
-                        "type": "error",
-                        "error": f"unknown request type: {request.get('type')}"
-                    }))
-                    sys.stdout.flush()
         except KeyboardInterrupt:
-            logger.info("keyboard interrupt received, shutting down")
+            logger.info("Server interrupted")
         except Exception as e:
-            logger.error(f"unexpected error: {e}", exc_info=True)
-            print(json.dumps({
-                "type": "error",
-                "error": f"unexpected error: {str(e)}"
-            }))
-            sys.stdout.flush()
+            logger.error(f"Server error: {e}", exc_info=True)
         finally:
-            # close database connection
-            if self.db:
-                self.db.close()
-                logger.info("database connection closed")
-
-            logger.info("mcp stdio server stopped")
-
-    def handle_tool_call(self, request):
-        """handle a tool call request.
-
-        args:
-            request: the tool call request
-        """
-
-        tool_name = request.get("tool")
-        tool_id = request.get("id")
-        arguments = request.get("arguments", {})
-
-        logger.info(f"tool call: {tool_name} with arguments {arguments}")
-
-        # check if the tool exists
-        if tool_name not in self.tools:
-            logger.warning(f"unknown tool: {tool_name}")
-            print(json.dumps({
-                "type": "tool_result",
-                "id": tool_id,
-                "status": "error",
-                "error": f"unknown tool: {tool_name}"
-            }))
-            sys.stdout.flush()
-            return
-
-        # call the tool
-        try:
-            result = self.tools[tool_name](arguments)
-            print(json.dumps({
-                "type": "tool_result",
-                "id": tool_id,
-                "status": "success",
-                "result": result
-            }))
-            sys.stdout.flush()
-        except Exception as e:
-            logger.error(f"error calling tool {tool_name}: {e}", exc_info=True)
-            print(json.dumps({
-                "type": "tool_result",
-                "id": tool_id,
-                "status": "error",
-                "error": f"error calling tool {tool_name}: {str(e)}"
-            }))
-            sys.stdout.flush()
+            if db:
+                db.close()
+            logger.info("MCP STDIO server stopped")
 
 
-def parse_arguments():
-    """parse command line arguments.
-
-    returns:
-        parsed argument namespace
-    """
-
+async def main():
+    """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="model context protocol server for rewinddb using stdio",
+        description="MCP STDIO server for RewindDB",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--env-file", metavar="FILE", default=".env",
+                       help="Path to .env file with database configuration")
 
-    parser.add_argument("--debug", action="store_true", help="enable debug logging")
-    parser.add_argument("--env-file", metavar="FILE", default=".env", help="path to .env file with database configuration")
+    args = parser.parse_args()
 
-    return parser.parse_args()
-
-
-def main():
-    """main entry point."""
-
-    args = parse_arguments()
-
-    # set log level
+    # Set log level
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
         logger.setLevel(logging.DEBUG)
 
-    # create and start server
-    server = MCPStdioServer(args.env_file)
-
-    try:
-        server.run()
-    except KeyboardInterrupt:
-        logger.info("shutting down server")
+    # Create and run server
+    server = MCPServer(args.env_file)
+    await server.run()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

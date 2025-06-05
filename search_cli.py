@@ -352,11 +352,12 @@ def estimate_timestamp_from_content_id(content_id, reference_date=None):
         return None
 
 
-def format_screen_results(results):
+def format_screen_results(results, use_utc=False):
     """format screen ocr search results.
 
     args:
         results: list of screen ocr dictionaries
+        use_utc: whether to display times in UTC (default: False for local time)
 
     returns:
         formatted string representation of the results
