@@ -76,76 +76,6 @@ python search_cli.py "meeting" --env-file /path/to/custom/.env
 python mcp_stdio.py --env-file /path/to/custom/.env
 ```
 
-## Library Usage
-
-### Basic Usage
-
-```python
-import rewinddb
-
-# initialize connection to the database (uses .env file)
-db = rewinddb.RewindDB()
-
-# or specify a custom .env file
-# db = rewinddb.RewindDB(env_file="/path/to/custom/.env")
-
-# get audio transcripts from the last hour
-transcripts = db.get_audio_transcripts_relative(hours=1)
-
-# get screen ocr data from the last 30 minutes
-ocr_data = db.get_screen_ocr_relative(minutes=30)
-
-# search for keywords across both audio and screen data
-results = db.search("python programming")
-
-# close the connection when done
-db.close()
-
-# or use as a context manager
-with rewinddb.RewindDB() as db:
-    transcripts = db.get_audio_transcripts_relative(hours=1)
-```
-
-### Retrieving Audio Transcripts
-
-```python
-# get transcripts from a relative time period
-transcripts = db.get_audio_transcripts_relative(hours=2, minutes=30)
-
-# get transcripts from a specific time range
-from datetime import datetime
-start_time = datetime(2023, 5, 11, 13, 0, 0)  # 1:00 PM
-end_time = datetime(2023, 5, 11, 17, 0, 0)    # 5:00 PM
-transcripts = db.get_audio_transcripts_absolute(start_time, end_time)
-```
-
-### Retrieving Screen OCR Data
-
-```python
-# get screen ocr from a relative time period
-ocr_data = db.get_screen_ocr_relative(days=1)
-
-# get screen ocr from a specific time range
-ocr_data = db.get_screen_ocr_absolute(start_time, end_time)
-```
-
-### Searching Across Data
-
-```python
-# search for keywords in the last 7 days (default)
-results = db.search("meeting notes")
-
-# search for keywords in a specific time period
-results = db.search("project deadline", days=30)
-
-# access search results
-for audio_hit in results['audio']:
-    print(f"Audio match at {audio_hit['absolute_time']}: {audio_hit['word']}")
-
-for screen_hit in results['screen']:
-    print(f"Screen match at {screen_hit['frame_time']} in {screen_hit['application']}: {screen_hit['text']}")
-```
-
 ## CLI Tools
 
 ### transcript_cli.py
@@ -237,6 +167,76 @@ The server follows the MCP specification and can be used with any MCP-compatible
 ```
 
 For detailed STDIO MCP setup instructions, configuration examples, and troubleshooting, see [README-MCP-STDIO.md](README-MCP-STDIO.md).
+
+## Library Usage
+
+### Basic Usage
+
+```python
+import rewinddb
+
+# initialize connection to the database (uses .env file)
+db = rewinddb.RewindDB()
+
+# or specify a custom .env file
+# db = rewinddb.RewindDB(env_file="/path/to/custom/.env")
+
+# get audio transcripts from the last hour
+transcripts = db.get_audio_transcripts_relative(hours=1)
+
+# get screen ocr data from the last 30 minutes
+ocr_data = db.get_screen_ocr_relative(minutes=30)
+
+# search for keywords across both audio and screen data
+results = db.search("python programming")
+
+# close the connection when done
+db.close()
+
+# or use as a context manager
+with rewinddb.RewindDB() as db:
+    transcripts = db.get_audio_transcripts_relative(hours=1)
+```
+
+### Retrieving Audio Transcripts
+
+```python
+# get transcripts from a relative time period
+transcripts = db.get_audio_transcripts_relative(hours=2, minutes=30)
+
+# get transcripts from a specific time range
+from datetime import datetime
+start_time = datetime(2023, 5, 11, 13, 0, 0)  # 1:00 PM
+end_time = datetime(2023, 5, 11, 17, 0, 0)    # 5:00 PM
+transcripts = db.get_audio_transcripts_absolute(start_time, end_time)
+```
+
+### Retrieving Screen OCR Data
+
+```python
+# get screen ocr from a relative time period
+ocr_data = db.get_screen_ocr_relative(days=1)
+
+# get screen ocr from a specific time range
+ocr_data = db.get_screen_ocr_absolute(start_time, end_time)
+```
+
+### Searching Across Data
+
+```python
+# search for keywords in the last 7 days (default)
+results = db.search("meeting notes")
+
+# search for keywords in a specific time period
+results = db.search("project deadline", days=30)
+
+# access search results
+for audio_hit in results['audio']:
+    print(f"Audio match at {audio_hit['absolute_time']}: {audio_hit['word']}")
+
+for screen_hit in results['screen']:
+    print(f"Screen match at {screen_hit['frame_time']} in {screen_hit['application']}: {screen_hit['text']}")
+```
 
 ## Database Schema
 
