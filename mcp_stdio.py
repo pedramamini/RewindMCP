@@ -452,7 +452,7 @@ class MCPServer:
         self.env_file = env_file
         self.tools = {
             "get_transcripts_relative": {
-                "description": "Get audio transcripts from a relative time period",
+                "description": "Get audio transcripts from a relative time period. Returns transcript sessions with full text content suitable for analysis, summarization, or detailed review. Each session includes complete transcript text and word-by-word timing.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -466,7 +466,7 @@ class MCPServer:
                 }
             },
             "get_transcripts_absolute": {
-                "description": "Get audio transcripts from a specific time window",
+                "description": "**PRIMARY TOOL for meeting summaries**: Get complete audio transcripts from a specific time window (e.g., '3 PM meeting'). This is the FIRST tool to use when asked to summarize meetings, calls, or conversations from specific times. Returns full transcript sessions with complete text content ready for analysis and summarization.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -487,7 +487,7 @@ class MCPServer:
                 }
             },
             "search_transcripts": {
-                "description": "Search through audio transcripts for keywords",
+                "description": "Search for specific keywords/phrases in transcripts. **NOT for meeting summaries** - use get_transcripts_absolute instead when asked to summarize meetings from specific times. This tool finds keyword matches with context snippets, useful for finding specific topics or names mentioned across multiple sessions.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -531,7 +531,7 @@ class MCPServer:
                 }
             },
             "get_transcript_by_id": {
-                "description": "Get a specific transcript by audio ID",
+                "description": "**FOLLOW-UP TOOL**: Get complete transcript content by audio ID. Use this AFTER get_transcripts_absolute to retrieve full transcript text for summarization. Essential second step when the first tool shows preview text that needs complete content for proper analysis.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -544,7 +544,7 @@ class MCPServer:
                 }
             },
             "search_screen_ocr": {
-                "description": "Search through OCR screen content for keywords",
+                "description": "Search through OCR screen content for keywords. Finds text that appeared on screen during specific time periods. Use this to find what was displayed on screen, applications used, or visual content during meetings or work sessions. Complements audio transcripts by showing what was visible.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -764,6 +764,14 @@ class MCPServer:
                 result += f" (timezone: {timezone})"
             result += ":\n\n"
 
+            if len(formatted['transcripts']) == 0:
+                result += "No transcript sessions found for this time period.\n"
+                result += "Try:\n"
+                result += "- Expanding the time range\n"
+                result += "- Checking if the date/time is correct\n"
+                result += "- Using search_transcripts to find content by keywords\n"
+                return result
+
             for i, session in enumerate(formatted['transcripts'][:5]):  # Show first 5
                 result += f"Session {i+1} (Audio ID: {session['audio_id']}):\n"
                 result += f"Time: {session['start_time']}\n"
@@ -771,6 +779,14 @@ class MCPServer:
 
             if len(formatted['transcripts']) > 5:
                 result += f"... and {len(formatted['transcripts']) - 5} more sessions\n"
+
+            # Add guidance for AI tools
+            if len(formatted['transcripts']) > 0:
+                result += "\n--- AI Tool Guidance ---\n"
+                result += "This tool provides transcript previews. For complete analysis:\n"
+                result += f"• Use get_transcript_by_id with audio IDs: {', '.join(str(s['audio_id']) for s in formatted['transcripts'][:3])}\n"
+                result += "• Each session contains full transcript text suitable for summarization\n"
+                result += "• Word-by-word timing is available for detailed analysis\n"
 
             return result
 
