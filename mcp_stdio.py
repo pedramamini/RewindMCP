@@ -8,6 +8,7 @@ RewindDB functionality.
 
 The server exposes the following tools:
 - get_transcripts_relative: Get audio transcripts from a relative time period
+- get_transcripts_absolute: Get audio transcripts from a specific time window
 - search_transcripts: Search through audio transcripts
 - search_screen_ocr: Search through OCR screen content
 - get_activity_stats: Get activity statistics
@@ -26,12 +27,7 @@ from typing import Any, Dict, List, Optional, Union
 import rewinddb
 from rewinddb.config import load_config
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler("/tmp/mcp_stdio.log")]
-)
+# Logger will be configured in main() after parsing arguments
 logger = logging.getLogger("mcp_stdio")
 
 # Global database connection
@@ -215,6 +211,23 @@ class MCPServer:
                         }
                     },
                     "required": ["time_period"]
+                }
+            },
+            "get_transcripts_absolute": {
+                "description": "Get audio transcripts from a specific time window",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "from": {
+                            "type": "string",
+                            "description": "Start time in ISO format (e.g., '2024-01-15T14:00:00')"
+                        },
+                        "to": {
+                            "type": "string",
+                            "description": "End time in ISO format (e.g., '2024-01-15T15:00:00')"
+                        }
+                    },
+                    "required": ["from", "to"]
                 }
             },
             "search_transcripts": {
@@ -462,6 +475,36 @@ class MCPServer:
                 result += f"Session {i+1} (Audio ID: {session['audio_id']}):\n"
                 result += f"Time: {session['start_time']}\n"
                 result += f"Text: {session['text'][:200]}{'...' if len(session['text']) > 200 else ''}\n\n"
+
+            return result
+
+        elif name == "get_transcripts_absolute":
+            from_time = arguments["from"]
+            to_time = arguments["to"]
+
+            # Convert string times to datetime
+            try:
+                from_time = datetime.datetime.fromisoformat(from_time)
+                to_time = datetime.datetime.fromisoformat(to_time)
+            except ValueError as e:
+                raise ValueError(f"Invalid ISO format for time parameters: {e}")
+
+            # Validate time range
+            if from_time >= to_time:
+                raise ValueError("'from' time must be before 'to' time")
+
+            # Get transcripts for the absolute time range
+            transcripts = db.get_audio_transcripts_absolute(from_time, to_time)
+            formatted = format_transcripts(transcripts)
+
+            result = f"Found {len(formatted['transcripts'])} transcript sessions from {from_time.isoformat()} to {to_time.isoformat()}:\n\n"
+            for i, session in enumerate(formatted['transcripts'][:5]):  # Show first 5
+                result += f"Session {i+1} (Audio ID: {session['audio_id']}):\n"
+                result += f"Time: {session['start_time']}\n"
+                result += f"Text: {session['text'][:200]}{'...' if len(session['text']) > 200 else ''}\n\n"
+
+            if len(formatted['transcripts']) > 5:
+                result += f"... and {len(formatted['transcripts']) - 5} more sessions\n"
 
             return result
 
@@ -761,15 +804,26 @@ async def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--log", metavar="FILE", default="/tmp/mcp_stdio.log",
+                       help="Path to log file for debug outputs")
     parser.add_argument("--env-file", metavar="FILE", default=".env",
                        help="Path to .env file with database configuration")
 
     args = parser.parse_args()
 
-    # Set log level
+    # Configure logging with the specified log file
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[logging.FileHandler(args.log)],
+        force=True  # Override any existing configuration
+    )
+
+    # Set log level for our logger
     if args.debug:
-        logging.getLogger().setLevel(logging.DEBUG)
         logger.setLevel(logging.DEBUG)
+    else:
+        logger.setLevel(logging.INFO)
 
     # Create and run server
     server = MCPServer(args.env_file)
