@@ -52,33 +52,68 @@ def detect_system_timezone() -> str:
         return system_timezone
 
     try:
-        if ZoneInfo:
-            # Python 3.9+ with zoneinfo
-            import time
-            system_timezone = time.tzname[0] if time.daylight == 0 else time.tzname[1]
-            # Try to get IANA timezone name
-            try:
-                # This works on most Unix systems
-                with open('/etc/timezone', 'r') as f:
-                    system_timezone = f.read().strip()
-            except (FileNotFoundError, PermissionError):
-                try:
-                    # Alternative method for some systems
-                    import os
-                    if 'TZ' in os.environ:
-                        system_timezone = os.environ['TZ']
-                    else:
-                        # Fallback to UTC offset
-                        offset_seconds = time.timezone if time.daylight == 0 else time.altzone
-                        offset_hours = -offset_seconds // 3600
-                        system_timezone = f"UTC{offset_hours:+d}"
-                except:
-                    system_timezone = "UTC"
-        else:
-            # Fallback for older Python
-            system_timezone = "UTC"
+        import os
 
-        logger.info(f"Detected system timezone: {system_timezone}")
+        # Method 1: Check TZ environment variable
+        if 'TZ' in os.environ:
+            system_timezone = os.environ['TZ']
+            logger.info(f"Detected timezone from TZ env var: {system_timezone}")
+            return system_timezone
+
+        # Method 2: Try to read /etc/timezone (Linux)
+        try:
+            with open('/etc/timezone', 'r') as f:
+                system_timezone = f.read().strip()
+                logger.info(f"Detected timezone from /etc/timezone: {system_timezone}")
+                return system_timezone
+        except (FileNotFoundError, PermissionError):
+            pass
+
+        # Method 3: Try to read /etc/localtime symlink (Linux/macOS)
+        try:
+            import os
+            localtime_path = '/etc/localtime'
+            if os.path.islink(localtime_path):
+                link_target = os.readlink(localtime_path)
+                # Extract timezone from path like /usr/share/zoneinfo/America/Chicago
+                if 'zoneinfo/' in link_target:
+                    system_timezone = link_target.split('zoneinfo/')[-1]
+                    logger.info(f"Detected timezone from /etc/localtime symlink: {system_timezone}")
+                    return system_timezone
+        except Exception:
+            pass
+
+        # Method 4: macOS specific - use systemsetup command
+        try:
+            import subprocess
+            result = subprocess.run(['systemsetup', '-gettimezone'],
+                                  capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                # Output format: "Time Zone: America/Chicago"
+                output = result.stdout.strip()
+                if 'Time Zone:' in output:
+                    system_timezone = output.split('Time Zone:')[-1].strip()
+                    logger.info(f"Detected timezone from macOS systemsetup: {system_timezone}")
+                    return system_timezone
+        except Exception:
+            pass
+
+        # Method 5: Use Python's time module to get UTC offset
+        import time
+        if time.daylight:
+            offset_seconds = time.altzone
+        else:
+            offset_seconds = time.timezone
+
+        offset_hours = -offset_seconds // 3600
+        offset_minutes = (-offset_seconds % 3600) // 60
+
+        if offset_minutes == 0:
+            system_timezone = f"UTC{offset_hours:+d}"
+        else:
+            system_timezone = f"UTC{offset_hours:+d}:{offset_minutes:02d}"
+
+        logger.info(f"Detected timezone from UTC offset: {system_timezone}")
         return system_timezone
 
     except Exception as e:
@@ -87,6 +122,7 @@ def detect_system_timezone() -> str:
         return system_timezone
 
 
+def parse_datetime_with_timezone(time_str: str, timezone: Optional[str] = None) -> datetime.datetime:
     """Parse a datetime string and convert to UTC.
 
     Args:
@@ -105,6 +141,7 @@ def detect_system_timezone() -> str:
         if dt.tzinfo is None:
             # Use provided timezone, or fall back to system timezone
             tz_to_use = timezone or detect_system_timezone()
+            logger.debug(f"No timezone in '{time_str}', using timezone: {tz_to_use}")
 
             if ZoneInfo and tz_to_use != "UTC":
                 try:
@@ -114,14 +151,23 @@ def detect_system_timezone() -> str:
                             local_tz = datetime.timezone.utc
                         else:
                             # Parse UTC offset (e.g., "UTC-6" or "UTC+5")
-                            sign = 1 if tz_to_use[3] == '+' else -1
-                            hours = int(tz_to_use[4:])
-                            local_tz = datetime.timezone(datetime.timedelta(hours=sign * hours))
+                            if ':' in tz_to_use:
+                                # Handle UTC+5:30 format
+                                offset_part = tz_to_use[3:]
+                                sign = 1 if offset_part[0] == '+' else -1
+                                hours, minutes = map(int, offset_part[1:].split(':'))
+                                total_minutes = sign * (hours * 60 + minutes)
+                                local_tz = datetime.timezone(datetime.timedelta(minutes=total_minutes))
+                            else:
+                                # Handle UTC+5 format
+                                sign = 1 if tz_to_use[3] == '+' else -1
+                                hours = int(tz_to_use[4:])
+                                local_tz = datetime.timezone(datetime.timedelta(hours=sign * hours))
                     else:
                         # Try to use as IANA timezone name
                         local_tz = ZoneInfo(tz_to_use)
                     dt = dt.replace(tzinfo=local_tz)
-                    logger.debug(f"Applied timezone '{tz_to_use}' to '{time_str}'")
+                    logger.debug(f"Applied timezone '{tz_to_use}' to '{time_str}' -> {dt}")
                 except Exception as e:
                     logger.warning(f"Failed to apply timezone '{tz_to_use}': {e}, using UTC")
                     dt = dt.replace(tzinfo=datetime.timezone.utc)
@@ -131,10 +177,113 @@ def detect_system_timezone() -> str:
                 dt = dt.replace(tzinfo=datetime.timezone.utc)
 
         # Convert to UTC
-        return dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        utc_dt = dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        logger.debug(f"Final UTC conversion: '{time_str}' -> {utc_dt}")
+        return utc_dt
 
     except ValueError as e:
         raise ValueError(f"Invalid datetime format '{time_str}': {e}")
+
+
+def parse_smart_datetime(time_str: str, timezone: Optional[str] = None) -> datetime.datetime:
+    """Parse a datetime string with smart local date handling.
+
+    This function handles cases where users provide times that should be
+    interpreted as local time, even if they have timezone offsets.
+
+    Args:
+        time_str: Time string (e.g., "15:00:00", "2025-06-05T15:00:00", or "2025-06-05T15:00:00-06:00")
+        timezone: Optional timezone to apply if not specified in time_str
+
+    Returns:
+        datetime object in UTC
+    """
+    original_time_str = time_str
+
+    # If the time string is just a time (HH:MM or HH:MM:SS), add today's local date
+    if ':' in time_str and 'T' not in time_str and '-' not in time_str:
+        # Get current local date
+        local_tz = detect_system_timezone()
+        if ZoneInfo and local_tz != "UTC" and not local_tz.startswith("UTC"):
+            try:
+                tz = ZoneInfo(local_tz)
+                now_local = datetime.datetime.now(tz)
+                today_str = now_local.strftime('%Y-%m-%d')
+                time_str = f"{today_str}T{time_str}"
+                logger.debug(f"Added local date to time: {time_str}")
+            except Exception:
+                # Fallback to system local time
+                now_local = datetime.datetime.now()
+                today_str = now_local.strftime('%Y-%m-%d')
+                time_str = f"{today_str}T{time_str}"
+                logger.debug(f"Added system date to time: {time_str}")
+
+    # Special handling: If user provides a timezone-aware timestamp,
+    # treat the datetime part as local time instead of respecting the offset
+    if ('+' in time_str or ('-' in time_str and time_str.count('-') > 2)):
+        try:
+            # Parse the full timestamp to extract the naive datetime part
+            dt_with_tz = datetime.datetime.fromisoformat(time_str)
+            naive_dt = dt_with_tz.replace(tzinfo=None)
+
+            # Get current local date to check if user meant "today"
+            local_tz_name = timezone or detect_system_timezone()
+            if ZoneInfo and local_tz_name != "UTC" and not local_tz_name.startswith("UTC"):
+                try:
+                    local_tz = ZoneInfo(local_tz_name)
+                    now_local = datetime.datetime.now(local_tz)
+                    today_local = now_local.date()
+
+                    # If they're asking for tomorrow's date but it's still today locally,
+                    # adjust to today
+                    if naive_dt.date() == today_local + datetime.timedelta(days=1):
+                        time_part = naive_dt.time()
+                        naive_dt = datetime.datetime.combine(today_local, time_part)
+                        logger.info(f"Adjusted future date to local today: {naive_dt}")
+
+                    # Apply local timezone to the naive datetime
+                    local_dt = naive_dt.replace(tzinfo=local_tz)
+                    utc_dt = local_dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+
+                    logger.debug(f"Treated '{original_time_str}' as local time: {naive_dt} {local_tz_name} -> {utc_dt} UTC")
+                    return utc_dt
+
+                except Exception as e:
+                    logger.warning(f"Failed to apply local timezone to '{time_str}': {e}")
+
+        except ValueError:
+            # If parsing fails, fall through to regular parsing
+            pass
+
+    # If no timezone specified in the string and user is asking for a future date,
+    # check if they might mean "today" in local time
+    if 'T' in time_str and '+' not in time_str and '-' not in time_str.split('T')[1]:
+        # Parse the date part
+        date_part = time_str.split('T')[0]
+        try:
+            requested_date = datetime.datetime.strptime(date_part, '%Y-%m-%d').date()
+
+            # Get current local date
+            local_tz = detect_system_timezone()
+            if ZoneInfo and local_tz != "UTC" and not local_tz.startswith("UTC"):
+                try:
+                    tz = ZoneInfo(local_tz)
+                    now_local = datetime.datetime.now(tz)
+                    today_local = now_local.date()
+
+                    # If they're asking for tomorrow's date but it's still today locally,
+                    # they probably mean today
+                    if requested_date == today_local + datetime.timedelta(days=1):
+                        time_part = time_str.split('T')[1]
+                        time_str = f"{today_local.strftime('%Y-%m-%d')}T{time_part}"
+                        logger.info(f"Adjusted future date to local today: {time_str}")
+                except Exception:
+                    pass
+        except ValueError:
+            pass
+
+    # Fall back to regular parsing
+    return parse_datetime_with_timezone(time_str, timezone)
 
 
 def parse_relative_time(time_str: str) -> Dict[str, int]:
@@ -598,9 +747,9 @@ class MCPServer:
             to_time_str = arguments["to"]
             timezone = arguments.get("timezone")
 
-            # Convert string times to UTC datetime
-            from_time = parse_datetime_with_timezone(from_time_str, timezone)
-            to_time = parse_datetime_with_timezone(to_time_str, timezone)
+            # Convert string times to UTC datetime using smart parsing
+            from_time = parse_smart_datetime(from_time_str, timezone)
+            to_time = parse_smart_datetime(to_time_str, timezone)
 
             # Validate time range
             if from_time >= to_time:
@@ -632,13 +781,13 @@ class MCPServer:
             to_time_str = arguments.get("to")
             timezone = arguments.get("timezone")
 
-            # Convert string times to UTC datetime if provided
+            # Convert string times to UTC datetime if provided using smart parsing
             from_time = None
             to_time = None
             if from_time_str:
-                from_time = parse_datetime_with_timezone(from_time_str, timezone)
+                from_time = parse_smart_datetime(from_time_str, timezone)
             if to_time_str:
-                to_time = parse_datetime_with_timezone(to_time_str, timezone)
+                to_time = parse_smart_datetime(to_time_str, timezone)
 
             # Perform search based on parameters
             if relative:
@@ -774,13 +923,13 @@ class MCPServer:
             timezone = arguments.get("timezone")
             application = arguments.get("application")
 
-            # Convert string times to UTC datetime if provided
+            # Convert string times to UTC datetime if provided using smart parsing
             from_time = None
             to_time = None
             if from_time_str:
-                from_time = parse_datetime_with_timezone(from_time_str, timezone)
+                from_time = parse_smart_datetime(from_time_str, timezone)
             if to_time_str:
-                to_time = parse_datetime_with_timezone(to_time_str, timezone)
+                to_time = parse_smart_datetime(to_time_str, timezone)
 
             # Perform search based on parameters
             if relative:
@@ -951,6 +1100,43 @@ async def main():
     # Detect system timezone at startup
     detected_tz = detect_system_timezone()
     logger.info(f"MCP server starting with system timezone: {detected_tz}")
+
+    # Log current date/time in both local and UTC
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    now_local = datetime.datetime.now()
+
+    logger.info(f"Current UTC time: {now_utc.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    logger.info(f"Current local time: {now_local.strftime('%Y-%m-%d %H:%M:%S')} (assumed {detected_tz})")
+
+    # Also try to show local time with detected timezone if possible
+    if ZoneInfo and detected_tz != "UTC" and not detected_tz.startswith("UTC"):
+        try:
+            local_tz = ZoneInfo(detected_tz)
+            now_with_tz = datetime.datetime.now(local_tz)
+            utc_offset = now_with_tz.utcoffset()
+            offset_hours = utc_offset.total_seconds() / 3600
+
+            logger.info(f"Current time with detected timezone: {now_with_tz.strftime('%Y-%m-%d %H:%M:%S %Z')} (offset: {now_with_tz.strftime('%z')})")
+            logger.info(f"UTC offset calculation: {offset_hours:+.1f} hours ({utc_offset})")
+
+            # Test timezone conversion with a sample time
+            test_time = "2025-06-05T15:00:00"
+            test_dt = datetime.datetime.fromisoformat(test_time).replace(tzinfo=local_tz)
+            test_utc = test_dt.astimezone(datetime.timezone.utc)
+            logger.info(f"Test conversion: {test_time} in {detected_tz} -> {test_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC")
+
+            # Test what happens if we treat a -06:00 timestamp as local time
+            test_input = "2025-06-05T15:00:00-06:00"
+            test_parsed = datetime.datetime.fromisoformat(test_input)
+            # Extract just the naive datetime part
+            naive_dt = test_parsed.replace(tzinfo=None)
+            # Apply local timezone
+            local_dt = naive_dt.replace(tzinfo=local_tz)
+            local_utc = local_dt.astimezone(datetime.timezone.utc)
+            logger.info(f"If we treat '{test_input}' as local time: {naive_dt} {detected_tz} -> {local_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC")
+
+        except Exception as e:
+            logger.debug(f"Could not create timezone-aware datetime: {e}")
 
     # Create and run server
     server = MCPServer(args.env_file)
