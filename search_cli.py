@@ -243,96 +243,74 @@ def format_audio_results(results, context=100, use_utc=False):
     if not results:
         return "no audio matches found."
 
-    # group words by audio session and match time
+    # group words by audio session first
     sessions = {}
     for item in results:
         audio_id = item['audio_id']
         if audio_id not in sessions:
             sessions[audio_id] = {
                 'start_time': item['audio_start_time'],
-                'matches': {}
+                'words': []
             }
-
-        # if this is a match word, create a new match group
-        if item.get('is_match', False):
-            # use absolute_time as key to group matches
-            match_time = item['absolute_time']
-            time_key = match_time.strftime('%Y-%m-%d %H:%M:%S.%f')
-
-            if time_key not in sessions[audio_id]['matches']:
-                sessions[audio_id]['matches'][time_key] = {
-                    'match_time': match_time,
-                    'words': []
-                }
-
-        # add word to appropriate match group or closest one
-        if item.get('is_match', False):
-            match_time = item['absolute_time']
-            time_key = match_time.strftime('%Y-%m-%d %H:%M:%S.%f')
-            sessions[audio_id]['matches'][time_key]['words'].append(item)
-        else:
-            # find closest match time to add context word to
-            word_time = item['absolute_time']
-            closest_match = None
-            min_diff = float('inf')
-
-            for match_time_key, match_data in sessions[audio_id]['matches'].items():
-                diff = abs((word_time - match_data['match_time']).total_seconds())
-                if diff < min_diff:
-                    min_diff = diff
-                    closest_match = match_time_key
-
-            if closest_match:
-                sessions[audio_id]['matches'][closest_match]['words'].append(item)
+        sessions[audio_id]['words'].append(item)
 
     # format each session with context
     formatted_results = []
     for audio_id, session in sessions.items():
+        # sort all words by time offset
+        all_words = sorted(session['words'], key=lambda x: x['time_offset'])
+
+        # find all match words
+        match_indices = [i for i, word in enumerate(all_words) if word.get('is_match', False)]
+
+        if not match_indices:
+            continue  # skip sessions with no matches
+
         start_time = session['start_time'].strftime('%Y-%m-%d %H:%M:%S')
         formatted_results.append(f"[{start_time}] Audio Match:")
 
-        # process each match in this session
-        for match_time_key, match_data in session['matches'].items():
-            # sort words by time offset
-            words = sorted(match_data['words'], key=lambda x: x['time_offset'])
+        # group consecutive matches together
+        match_groups = []
+        current_group = [match_indices[0]]
 
-            # find the match word(s) and ensure we have context before and after
-            match_indices = [i for i, word in enumerate(words) if word.get('is_match', False)]
-
-            if match_indices:
-                # get the first and last match indices
-                first_match = match_indices[0]
-                last_match = match_indices[-1]
-
-                # ensure we have at least 'context' words before and after
-                start_idx = max(0, first_match - context)
-                end_idx = min(len(words), last_match + context + 1)
-
-                # get the context words
-                context_words = words[start_idx:end_idx]
-
-                # format the context
-                word_texts = []
-                for word in context_words:
-                    if word.get('is_match', False):
-                        # highlight match words
-                        word_texts.append(f"{word['word']}")
-                    else:
-                        word_texts.append(word['word'])
-
-                context_text = " ".join(word_texts)
-
-                # only add ellipsis if we actually truncated content
-                prefix = "..." if start_idx > 0 else ""
-                suffix = "..." if end_idx < len(words) else ""
-
-                # add the context to the results
-                formatted_results.append(f"  {prefix}{context_text}{suffix}")
+        for i in range(1, len(match_indices)):
+            # if matches are close together (within 10 words), group them
+            if match_indices[i] - match_indices[i-1] <= 10:
+                current_group.append(match_indices[i])
             else:
-                # fallback if no match found (shouldn't happen)
-                word_texts = [word['word'] for word in words]
-                context_text = " ".join(word_texts)
-                formatted_results.append(f"  ...{context_text}...")
+                match_groups.append(current_group)
+                current_group = [match_indices[i]]
+        match_groups.append(current_group)
+
+        # process each match group
+        for group in match_groups:
+            first_match = group[0]
+            last_match = group[-1]
+
+            # ensure we have at least 'context' words before and after
+            start_idx = max(0, first_match - context)
+            end_idx = min(len(all_words), last_match + context + 1)
+
+            # get the context words
+            context_words = all_words[start_idx:end_idx]
+
+            # format the context
+            word_texts = []
+            for word in context_words:
+                if word.get('is_match', False):
+                    # highlight match words
+                    word_texts.append(f"{word['word']}")
+                else:
+                    word_texts.append(word['word'])
+
+            context_text = " ".join(word_texts)
+
+            # only add ellipsis if we actually truncated content
+            prefix = "..." if start_idx > 0 else ""
+            suffix = "..." if end_idx < len(all_words) else ""
+
+            # add the context to the results
+            formatted_results.append(f"  {prefix}{context_text}{suffix}")
 
         formatted_results.append("")  # empty line between sessions
 
