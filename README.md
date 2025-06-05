@@ -9,14 +9,13 @@ RewindDB is a Python library that provides a convenient interface to the Rewind.
 The project consists of three main components:
 1. A core Python library (`rewinddb`) for direct database access
 2. Command-line tools for transcript retrieval and keyword searching
-3. An MCP server that exposes these capabilities to GenAI models
+3. An MCP STDIO server that exposes these capabilities to GenAI models through the standardized Model Context Protocol
 
 ## Installation
 
 ### Prerequisites
 
 - Python 3.6+
-- FastAPI and Uvicorn (for MCP server)
 
 ### Install from Source
 
@@ -32,9 +31,6 @@ pip install .
 ### Manual Installation
 
 ```bash
-# install required dependencies
-pip install fastapi uvicorn
-
 # install the package in development mode
 pip install -e .
 ```
@@ -77,7 +73,7 @@ python search_cli.py "meeting" --env-file /path/to/custom/.env
 
 ```bash
 # with mcp server
-python mcp_server.py --env-file /path/to/custom/.env
+python mcp_stdio.py --env-file /path/to/custom/.env
 ```
 
 ## Library Usage
@@ -194,53 +190,53 @@ python search_cli.py "python" --context 5 --debug
 python search_cli.py "meeting" --env-file /path/to/custom/.env
 ```
 
-## MCP Server
+## MCP STDIO Server
 
-The Model Context Protocol (MCP) server exposes RewindDB functionality to GenAI models through a REST API.
+The Model Context Protocol (MCP) server exposes RewindDB functionality to GenAI models through the standardized MCP STDIO protocol. This implementation is fully MCP-compliant and works with MCP clients like Claude, Raycast, and other AI assistants.
 
-### Starting the Server
+### Quick Start
 
 ```bash
-# start the server on default port (8000)
-python mcp_server.py
-
-# specify a different port
-python mcp_server.py --port 8080
+# start the STDIO MCP server
+python mcp_stdio.py
 
 # enable debug logging
-python mcp_server.py --debug
+python mcp_stdio.py --debug
 
 # use a custom .env file
-python mcp_server.py --env-file /path/to/custom/.env
+python mcp_stdio.py --env-file /path/to/custom/.env
 ```
 
 ### Available Tools
 
 The MCP server provides the following tools:
 
-1. `get_transcripts_relative`: Retrieve audio transcripts from a relative time period
-2. `get_transcripts_absolute`: Retrieve audio transcripts from a specific time range
-3. `search`: Search for keywords across both audio and screen data
+1. `get_transcripts_relative`: Get audio transcripts from a relative time period (e.g., "1hour", "30minutes", "1day")
+2. `search_transcripts`: Search through audio transcripts for keywords with optional time filtering
+3. `search_screen_ocr`: Search through OCR screen content for keywords with optional time and application filtering
+4. `get_activity_stats`: Get activity statistics for a specified time period
+5. `get_transcript_by_id`: Get a specific transcript by audio ID
 
-### API Documentation
+### MCP Client Integration
 
-When the server is running, you can access the auto-generated API documentation at:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
+The server follows the MCP specification and can be used with any MCP-compatible client. Example configuration:
 
-### Example Usage with cURL
-
-```bash
-# get transcripts from the last hour
-curl -X POST "http://localhost:8000/mcp/tools/get_transcripts_relative" \
-  -H "Content-Type: application/json" \
-  -d '{"time_period": "1hour"}'
-
-# search for keywords
-curl -X POST "http://localhost:8000/mcp/tools/search" \
-  -H "Content-Type: application/json" \
-  -d '{"keyword": "meeting", "relative": "1day"}'
+```json
+{
+  "mcpServers": {
+    "rewinddb": {
+      "command": "python",
+      "args": ["/path/to/mcp_stdio.py"],
+      "env": {
+        "REWIND_DB_PATH": "/path/to/your/rewind.db",
+        "REWIND_DB_PASSWORD": "your_password"
+      }
+    }
+  }
+}
 ```
+
+For detailed STDIO MCP setup instructions, configuration examples, and troubleshooting, see [README-MCP-STDIO.md](README-MCP-STDIO.md).
 
 ## Database Schema
 
@@ -327,7 +323,7 @@ pip install pytest black isort
 pytest
 
 # run a specific test
-pytest test_mcp_server.py
+pytest test_mcp_stdio.py
 ```
 
 ## Troubleshooting
@@ -352,9 +348,9 @@ If no transcripts are returned:
 
 If the MCP server fails to start or respond:
 
-1. Check that all dependencies are installed: `pip install fastapi uvicorn`
-2. Verify that the port is not in use by another application
-3. Check the server logs for specific error messages
+1. Check that all MCP dependencies are installed: `pip install "mcp>=0.1.0"`
+2. Verify your database configuration in the `.env` file
+3. Check the server logs in `/tmp/mcp_stdio.log` for specific error messages
 
 ## Stats CLI
 

@@ -291,18 +291,41 @@ def parse_relative_time(time_str: str) -> Dict[str, int]:
     time_str = time_str.lower().strip()
     time_components = {"days": 0, "hours": 0, "minutes": 0, "seconds": 0}
 
+    # Short form pattern (e.g., "5h", "3m", "10d", "2w")
+    short_patterns = {
+        r"^(\d+)w$": lambda x: {"days": int(x) * 7},
+        r"^(\d+)d$": lambda x: {"days": int(x)},
+        r"^(\d+)h$": lambda x: {"hours": int(x)},
+        r"^(\d+)m$": lambda x: {"minutes": int(x)},
+        r"^(\d+)s$": lambda x: {"seconds": int(x)}
+    }
+
+    # Check for short form patterns first
+    for pattern, handler in short_patterns.items():
+        match = re.search(pattern, time_str)
+        if match:
+            component_values = handler(match.group(1))
+            for component, value in component_values.items():
+                time_components[component] = value
+            return time_components
+
+    # Long form patterns
     patterns = {
         r"(\d+)(?:day|days)": "days",
         r"(\d+)(?:hour|hours|hr|hrs)": "hours",
         r"(\d+)(?:minute|minutes|min|mins)": "minutes",
-        r"(\d+)(?:second|seconds|sec|secs)": "seconds"
+        r"(\d+)(?:second|seconds|sec|secs)": "seconds",
+        r"(\d+)(?:week|weeks)": "weeks"
     }
 
     found_match = False
     for pattern, component in patterns.items():
         match = re.search(pattern, time_str)
         if match:
-            time_components[component] = int(match.group(1))
+            if component == "weeks":
+                time_components["days"] += int(match.group(1)) * 7
+            else:
+                time_components[component] = int(match.group(1))
             found_match = True
 
     if not found_match:
@@ -458,8 +481,8 @@ class MCPServer:
                     "properties": {
                         "time_period": {
                             "type": "string",
-                            "description": "Time period like '1hour', '30minutes', '1day'",
-                            "pattern": r"^\d+(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
+                            "description": "Time period like '1hour', '30minutes', '1day', '1week'",
+                            "pattern": r"^\d+(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs|week|weeks)$"
                         }
                     },
                     "required": ["time_period"]
@@ -497,8 +520,8 @@ class MCPServer:
                         },
                         "relative": {
                             "type": "string",
-                            "description": "Optional relative time period like '1hour', '1day'",
-                            "pattern": r"^\d+(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
+                            "description": "Optional relative time period like '1hour', '1day', '1week'",
+                            "pattern": r"^\d+(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs|week|weeks)$"
                         },
                         "from": {
                             "type": "string",
@@ -523,8 +546,8 @@ class MCPServer:
                     "properties": {
                         "time_period": {
                             "type": "string",
-                            "description": "Time period like '1hour', '30minutes', '1day'",
-                            "pattern": r"^\d+(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
+                            "description": "Time period like '1hour', '30minutes', '1day', '1week'",
+                            "pattern": r"^\d+(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs|week|weeks)$"
                         }
                     },
                     "required": ["time_period"]
@@ -554,8 +577,8 @@ class MCPServer:
                         },
                         "relative": {
                             "type": "string",
-                            "description": "Optional relative time period like '1hour', '1day'",
-                            "pattern": r"^\d+(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
+                            "description": "Optional relative time period like '1hour', '1day', '1week'",
+                            "pattern": r"^\d+(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs|week|weeks)$"
                         },
                         "from": {
                             "type": "string",
@@ -723,9 +746,9 @@ class MCPServer:
             time_period = arguments["time_period"]
 
             # Validate time period format
-            pattern = r"^(\d+)(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
+            pattern = r"^(\d+)(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs|week|weeks)$"
             if not re.match(pattern, time_period):
-                raise ValueError("time_period must be in format like '1hour', '30minutes', '1day'")
+                raise ValueError("time_period must be in format like '1hour', '30minutes', '1day', '1week'")
 
             # Parse relative time
             time_components = parse_relative_time(time_period)
@@ -869,9 +892,9 @@ class MCPServer:
             time_period = arguments["time_period"]
 
             # Validate time period format
-            pattern = r"^(\d+)(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs)$"
+            pattern = r"^(\d+)(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs|week|weeks)$"
             if not re.match(pattern, time_period):
-                raise ValueError("time_period must be in format like '1hour', '30minutes', '1day'")
+                raise ValueError("time_period must be in format like '1hour', '30minutes', '1day', '1week'")
 
             # Parse relative time
             time_components = parse_relative_time(time_period)

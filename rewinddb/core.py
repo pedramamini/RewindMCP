@@ -1506,9 +1506,9 @@ class RewindDB:
                           (endDate BETWEEN ? AND ?) OR
                           (startDate <= ? AND endDate >= ?)
                 """, (
-                    week_ago_ts, now_ts,
-                    week_ago_ts, now_ts,
-                    week_ago_ts, now_ts
+                    week_ago_str, now_str,
+                    week_ago_str, now_str,
+                    week_ago_str, now_str
                 ))
             else:
                 # For standard statistics, count all segments

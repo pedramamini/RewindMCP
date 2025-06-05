@@ -25,8 +25,6 @@ setuptools.setup(
     python_requires=">=3.6",
     install_requires=[
         "pysqlcipher3",
-        "fastapi",
-        "uvicorn",
         "pydantic",
         "requests",
         "python-dotenv",
