@@ -11,6 +11,13 @@ The project consists of three main components:
 2. Command-line tools for transcript retrieval and keyword searching
 3. An MCP STDIO server that exposes these capabilities to GenAI models through the standardized Model Context Protocol
 
+The main purpose of this project, for me, was to connect Rewind to my Raycast:
+
+![image](https://github.com/user-attachments/assets/0e6cc4a7-dc4d-45ea-b368-52adbf70462c)
+
+![image](https://github.com/user-attachments/assets/04a3932c-7cb1-4afe-84b2-b96401ac1021)
+
+
 ## Installation
 
 ### Prerequisites
