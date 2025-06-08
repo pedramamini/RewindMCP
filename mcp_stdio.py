@@ -11,6 +11,8 @@ The server exposes the following tools:
 - get_transcripts_absolute: Get audio transcripts from a specific time window
 - search_transcripts: Search through audio transcripts
 - search_screen_ocr: Search through OCR screen content
+- get_screen_ocr_relative: Get all OCR content from a relative time period
+- get_screen_ocr_absolute: Get all OCR content from a specific time window
 - get_activity_stats: Get activity statistics
 - get_transcript_by_id: Get specific transcript by ID
 """
@@ -599,6 +601,49 @@ class MCPServer:
                     },
                     "required": ["keyword"]
                 }
+            },
+            "get_screen_ocr_relative": {
+                "description": "Get all screen OCR content from a relative time period. Returns complete OCR text that appeared on screen during the specified time window, useful for reviewing what was displayed without needing to search for specific keywords.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "time_period": {
+                            "type": "string",
+                            "description": "Time period like '1hour', '30minutes', '1day', '1week'",
+                            "pattern": r"^\d+(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs|week|weeks)$"
+                        },
+                        "application": {
+                            "type": "string",
+                            "description": "Optional application name to filter results"
+                        }
+                    },
+                    "required": ["time_period"]
+                }
+            },
+            "get_screen_ocr_absolute": {
+                "description": "Get all screen OCR content from a specific time window. Returns complete OCR text that appeared on screen during the specified absolute time range, useful for reviewing what was displayed during meetings, work sessions, or specific time periods.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "from": {
+                            "type": "string",
+                            "description": "Start time in ISO format. Can include timezone (e.g., '2024-01-15T14:00:00-06:00') or use timezone parameter"
+                        },
+                        "to": {
+                            "type": "string",
+                            "description": "End time in ISO format. Can include timezone (e.g., '2024-01-15T15:00:00-06:00') or use timezone parameter"
+                        },
+                        "timezone": {
+                            "type": "string",
+                            "description": "Optional timezone name (e.g., 'America/Chicago') if from/to times don't include timezone info"
+                        },
+                        "application": {
+                            "type": "string",
+                            "description": "Optional application name to filter results"
+                        }
+                    },
+                    "required": ["from", "to"]
+                }
             }
         }
 
@@ -1029,6 +1074,153 @@ class MCPServer:
                     response_text += f"... and {screen_count - 10} more screen matches\n"
             else:
                 response_text += "No screen OCR matches found.\n"
+
+            return response_text
+
+        elif name == "get_screen_ocr_relative":
+            time_period = arguments["time_period"]
+            application = arguments.get("application")
+
+            # Validate time period format
+            pattern = r"^(\d+)(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs|week|weeks)$"
+            if not re.match(pattern, time_period):
+                raise ValueError("time_period must be in format like '1hour', '30minutes', '1day', '1week'")
+
+            # Parse relative time
+            time_components = parse_relative_time(time_period)
+
+            # Get OCR data
+            ocr_data = db.get_screen_ocr_relative(**time_components)
+
+            # Filter by application if specified
+            if application:
+                ocr_data = [
+                    item for item in ocr_data
+                    if application.lower() in item.get('application', '').lower()
+                ]
+
+            # Format the response
+            response_text = f"Found {len(ocr_data)} OCR records in the last {time_period}"
+            if application:
+                response_text += f" for application '{application}'"
+            response_text += ":\n\n"
+
+            if not ocr_data:
+                response_text += "No OCR data found for this time period.\n"
+                response_text += "Try:\n"
+                response_text += "- Expanding the time range\n"
+                response_text += "- Removing application filter\n"
+                response_text += "- Using search_screen_ocr to find specific content\n"
+                return response_text
+
+            # Group by frame and show results
+            frames = {}
+            for item in ocr_data:
+                frame_id = item['frame_id']
+                if frame_id not in frames:
+                    frames[frame_id] = {
+                        'time': item['frame_time'],
+                        'application': item['application'],
+                        'window': item['window'],
+                        'nodes': []
+                    }
+                frames[frame_id]['nodes'].append(item)
+
+            # Show first 10 frames
+            frame_count = 0
+            for frame_id, frame_data in sorted(frames.items(), key=lambda x: x[1]['time'], reverse=True):
+                if frame_count >= 10:
+                    break
+
+                frame_count += 1
+                time_str = frame_data['time'].isoformat() if frame_data['time'] else 'Unknown'
+                app_info = f" ({frame_data['application']})" if frame_data['application'] else ""
+                window_info = f" - {frame_data['window']}" if frame_data['window'] else ""
+
+                response_text += f"Frame {frame_count} (ID: {frame_id}):\n"
+                response_text += f"Time: {time_str}{app_info}{window_info}\n"
+                response_text += f"OCR Nodes: {len(frame_data['nodes'])}\n\n"
+
+            if len(frames) > 10:
+                response_text += f"... and {len(frames) - 10} more frames\n"
+
+            response_text += f"\nTotal frames: {len(frames)}, Total OCR nodes: {len(ocr_data)}\n"
+
+            return response_text
+
+        elif name == "get_screen_ocr_absolute":
+            from_time_str = arguments["from"]
+            to_time_str = arguments["to"]
+            timezone = arguments.get("timezone")
+            application = arguments.get("application")
+
+            # Convert string times to UTC datetime using smart parsing
+            from_time = parse_smart_datetime(from_time_str, timezone)
+            to_time = parse_smart_datetime(to_time_str, timezone)
+
+            # Validate time range
+            if from_time >= to_time:
+                raise ValueError("'from' time must be before 'to' time")
+
+            # Get OCR data for the absolute time range
+            ocr_data = db.get_screen_ocr_absolute(from_time, to_time)
+
+            # Filter by application if specified
+            if application:
+                ocr_data = [
+                    item for item in ocr_data
+                    if application.lower() in item.get('application', '').lower()
+                ]
+
+            # Format the response
+            response_text = f"Found {len(ocr_data)} OCR records from {from_time_str} to {to_time_str}"
+            if timezone:
+                response_text += f" (timezone: {timezone})"
+            if application:
+                response_text += f" for application '{application}'"
+            response_text += ":\n\n"
+
+            if not ocr_data:
+                response_text += "No OCR data found for this time period.\n"
+                response_text += "Try:\n"
+                response_text += "- Expanding the time range\n"
+                response_text += "- Checking if the date/time is correct\n"
+                response_text += "- Removing application filter\n"
+                response_text += "- Using search_screen_ocr to find specific content\n"
+                return response_text
+
+            # Group by frame and show results
+            frames = {}
+            for item in ocr_data:
+                frame_id = item['frame_id']
+                if frame_id not in frames:
+                    frames[frame_id] = {
+                        'time': item['frame_time'],
+                        'application': item['application'],
+                        'window': item['window'],
+                        'nodes': []
+                    }
+                frames[frame_id]['nodes'].append(item)
+
+            # Show first 10 frames
+            frame_count = 0
+            for frame_id, frame_data in sorted(frames.items(), key=lambda x: x[1]['time'], reverse=True):
+                if frame_count >= 10:
+                    break
+
+                frame_count += 1
+                time_str = frame_data['time'].isoformat() if frame_data['time'] else 'Unknown'
+                app_info = f" ({frame_data['application']})" if frame_data['application'] else ""
+                window_info = f" - {frame_data['window']}" if frame_data['window'] else ""
+
+                response_text += f"Frame {frame_count} (ID: {frame_id}):\n"
+                response_text += f"Time: {time_str}{app_info}{window_info}\n"
+                response_text += f"OCR Nodes: {len(frame_data['nodes'])}\n\n"
+
+            if len(frames) > 10:
+                response_text += f"... and {len(frames) - 10} more frames\n"
+
+            response_text += f"\nTotal frames: {len(frames)}, Total OCR nodes: {len(ocr_data)}\n"
 
             return response_text
 
