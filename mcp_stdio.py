@@ -13,6 +13,8 @@ The server exposes the following tools:
 - search_screen_ocr: Search through OCR screen content
 - get_screen_ocr_relative: Get all OCR content from a relative time period
 - get_screen_ocr_absolute: Get all OCR content from a specific time window
+- get_ocr_applications_relative: Get all applications with OCR data from a relative time period
+- get_ocr_applications_absolute: Get all applications with OCR data from a specific time window
 - get_activity_stats: Get activity statistics
 - get_transcript_by_id: Get specific transcript by ID
 """
@@ -644,6 +646,41 @@ class MCPServer:
                     },
                     "required": ["from", "to"]
                 }
+            },
+            "get_ocr_applications_relative": {
+                "description": "Get all application names that have OCR data from a relative time period. Returns a list of applications that were active and had screen content captured during the specified time window, useful for discovering what apps were used.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "time_period": {
+                            "type": "string",
+                            "description": "Time period like '1hour', '30minutes', '1day', '1week'",
+                            "pattern": r"^\d+(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs|week|weeks)$"
+                        }
+                    },
+                    "required": ["time_period"]
+                }
+            },
+            "get_ocr_applications_absolute": {
+                "description": "Get all application names that have OCR data from a specific time window. Returns a list of applications that were active and had screen content captured during the specified absolute time range, useful for discovering what apps were used during meetings or work sessions.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "from": {
+                            "type": "string",
+                            "description": "Start time in ISO format. Can include timezone (e.g., '2024-01-15T14:00:00-06:00') or use timezone parameter"
+                        },
+                        "to": {
+                            "type": "string",
+                            "description": "End time in ISO format. Can include timezone (e.g., '2024-01-15T15:00:00-06:00') or use timezone parameter"
+                        },
+                        "timezone": {
+                            "type": "string",
+                            "description": "Optional timezone name (e.g., 'America/Chicago') if from/to times don't include timezone info"
+                        }
+                    },
+                    "required": ["from", "to"]
+                }
             }
         }
 
@@ -1089,8 +1126,8 @@ class MCPServer:
             # Parse relative time
             time_components = parse_relative_time(time_period)
 
-            # Get OCR data
-            ocr_data = db.get_screen_ocr_relative(**time_components)
+            # Get OCR text content
+            ocr_data = db.get_screen_ocr_text_relative(**time_components)
 
             # Filter by application if specified
             if application:
@@ -1113,38 +1150,33 @@ class MCPServer:
                 response_text += "- Using search_screen_ocr to find specific content\n"
                 return response_text
 
-            # Group by frame and show results
-            frames = {}
-            for item in ocr_data:
-                frame_id = item['frame_id']
-                if frame_id not in frames:
-                    frames[frame_id] = {
-                        'time': item['frame_time'],
-                        'application': item['application'],
-                        'window': item['window'],
-                        'nodes': []
-                    }
-                frames[frame_id]['nodes'].append(item)
-
-            # Show first 10 frames
+            # Show OCR text content grouped by frame
             frame_count = 0
-            for frame_id, frame_data in sorted(frames.items(), key=lambda x: x[1]['time'], reverse=True):
-                if frame_count >= 10:
-                    break
+            frames_shown = set()
 
+            for item in sorted(ocr_data, key=lambda x: x['frame_time'], reverse=True):
+                frame_id = item['frame_id']
+
+                # Skip if we've already shown this frame or reached limit
+                if frame_id in frames_shown or frame_count >= 10:
+                    continue
+
+                frames_shown.add(frame_id)
                 frame_count += 1
-                time_str = frame_data['time'].isoformat() if frame_data['time'] else 'Unknown'
-                app_info = f" ({frame_data['application']})" if frame_data['application'] else ""
-                window_info = f" - {frame_data['window']}" if frame_data['window'] else ""
+
+                time_str = item['frame_time'].isoformat() if item['frame_time'] else 'Unknown'
+                app_info = f" ({item['application']})" if item['application'] else ""
+                window_info = f" - {item['window']}" if item['window'] else ""
 
                 response_text += f"Frame {frame_count} (ID: {frame_id}):\n"
                 response_text += f"Time: {time_str}{app_info}{window_info}\n"
-                response_text += f"OCR Nodes: {len(frame_data['nodes'])}\n\n"
+                response_text += f"OCR Text:\n{item['text']}\n\n"
 
-            if len(frames) > 10:
-                response_text += f"... and {len(frames) - 10} more frames\n"
+            unique_frames = len(set(item['frame_id'] for item in ocr_data))
+            if unique_frames > 10:
+                response_text += f"... and {unique_frames - 10} more frames\n"
 
-            response_text += f"\nTotal frames: {len(frames)}, Total OCR nodes: {len(ocr_data)}\n"
+            response_text += f"\nTotal frames: {unique_frames}, Total OCR records: {len(ocr_data)}\n"
 
             return response_text
 
@@ -1162,8 +1194,8 @@ class MCPServer:
             if from_time >= to_time:
                 raise ValueError("'from' time must be before 'to' time")
 
-            # Get OCR data for the absolute time range
-            ocr_data = db.get_screen_ocr_absolute(from_time, to_time)
+            # Get OCR text content for the absolute time range
+            ocr_data = db.get_screen_ocr_text_absolute(from_time, to_time)
 
             # Filter by application if specified
             if application:
@@ -1189,39 +1221,190 @@ class MCPServer:
                 response_text += "- Using search_screen_ocr to find specific content\n"
                 return response_text
 
-            # Group by frame and show results
-            frames = {}
-            for item in ocr_data:
-                frame_id = item['frame_id']
-                if frame_id not in frames:
-                    frames[frame_id] = {
-                        'time': item['frame_time'],
-                        'application': item['application'],
-                        'window': item['window'],
-                        'nodes': []
-                    }
-                frames[frame_id]['nodes'].append(item)
-
-            # Show first 10 frames
+            # Show OCR text content grouped by frame
             frame_count = 0
-            for frame_id, frame_data in sorted(frames.items(), key=lambda x: x[1]['time'], reverse=True):
-                if frame_count >= 10:
-                    break
+            frames_shown = set()
 
+            for item in sorted(ocr_data, key=lambda x: x['frame_time'], reverse=True):
+                frame_id = item['frame_id']
+
+                # Skip if we've already shown this frame or reached limit
+                if frame_id in frames_shown or frame_count >= 10:
+                    continue
+
+                frames_shown.add(frame_id)
                 frame_count += 1
-                time_str = frame_data['time'].isoformat() if frame_data['time'] else 'Unknown'
-                app_info = f" ({frame_data['application']})" if frame_data['application'] else ""
-                window_info = f" - {frame_data['window']}" if frame_data['window'] else ""
+
+                time_str = item['frame_time'].isoformat() if item['frame_time'] else 'Unknown'
+                app_info = f" ({item['application']})" if item['application'] else ""
+                window_info = f" - {item['window']}" if item['window'] else ""
 
                 response_text += f"Frame {frame_count} (ID: {frame_id}):\n"
                 response_text += f"Time: {time_str}{app_info}{window_info}\n"
-                response_text += f"OCR Nodes: {len(frame_data['nodes'])}\n\n"
+                response_text += f"OCR Text:\n{item['text']}\n\n"
 
-            if len(frames) > 10:
-                response_text += f"... and {len(frames) - 10} more frames\n"
+            unique_frames = len(set(item['frame_id'] for item in ocr_data))
+            if unique_frames > 10:
+                response_text += f"... and {unique_frames - 10} more frames\n"
 
-            response_text += f"\nTotal frames: {len(frames)}, Total OCR nodes: {len(ocr_data)}\n"
+            response_text += f"\nTotal frames: {unique_frames}, Total OCR records: {len(ocr_data)}\n"
 
+            return response_text
+
+        elif name == "get_ocr_applications_relative":
+            time_period = arguments["time_period"]
+
+            # Validate time period format
+            pattern = r"^(\d+)(hour|hours|hr|hrs|minute|minutes|min|mins|day|days|second|seconds|sec|secs|week|weeks)$"
+            if not re.match(pattern, time_period):
+                raise ValueError("time_period must be in format like '1hour', '30minutes', '1day', '1week'")
+
+            # Parse relative time
+            time_components = parse_relative_time(time_period)
+
+            # Get OCR text content
+            ocr_data = db.get_screen_ocr_text_relative(**time_components)
+
+            # Extract unique applications with their usage stats
+            app_stats = {}
+            frame_app_map = {}
+
+            for item in ocr_data:
+                app = item.get('application', 'Unknown')
+                frame_id = item['frame_id']
+
+                if app not in app_stats:
+                    app_stats[app] = {
+                        'frame_count': 0,
+                        'text_records': 0,
+                        'first_seen': item['frame_time'],
+                        'last_seen': item['frame_time'],
+                        'windows': set(),
+                        'total_text_length': 0
+                    }
+
+                app_stats[app]['text_records'] += 1
+                app_stats[app]['total_text_length'] += len(item.get('text', ''))
+
+                if item['window']:
+                    app_stats[app]['windows'].add(item['window'])
+
+                # Update time range
+                if item['frame_time']:
+                    if item['frame_time'] < app_stats[app]['first_seen']:
+                        app_stats[app]['first_seen'] = item['frame_time']
+                    if item['frame_time'] > app_stats[app]['last_seen']:
+                        app_stats[app]['last_seen'] = item['frame_time']
+
+                # Count unique frames per app
+                if frame_id not in frame_app_map:
+                    frame_app_map[frame_id] = app
+                    app_stats[app]['frame_count'] += 1
+
+            # Format response
+            response_text = f"Found {len(app_stats)} applications with OCR data in the last {time_period}:\n\n"
+
+            if not app_stats:
+                response_text += "No applications found with OCR data for this time period.\n"
+                return response_text
+
+            # Sort by text records (activity level)
+            sorted_apps = sorted(app_stats.items(), key=lambda x: x[1]['text_records'], reverse=True)
+
+            for i, (app, stats) in enumerate(sorted_apps, 1):
+                first_seen = stats['first_seen'].isoformat() if stats['first_seen'] else 'Unknown'
+                last_seen = stats['last_seen'].isoformat() if stats['last_seen'] else 'Unknown'
+                window_count = len(stats['windows'])
+                avg_text_length = stats['total_text_length'] // stats['text_records'] if stats['text_records'] > 0 else 0
+
+                response_text += f"{i}. {app}\n"
+                response_text += f"   Frames: {stats['frame_count']}, Text Records: {stats['text_records']}\n"
+                response_text += f"   Windows: {window_count}, Avg Text Length: {avg_text_length} chars\n"
+                response_text += f"   Active: {first_seen} to {last_seen}\n\n"
+
+            response_text += f"Total OCR records: {len(ocr_data)}\n"
+            return response_text
+
+        elif name == "get_ocr_applications_absolute":
+            from_time_str = arguments["from"]
+            to_time_str = arguments["to"]
+            timezone = arguments.get("timezone")
+
+            # Convert string times to UTC datetime using smart parsing
+            from_time = parse_smart_datetime(from_time_str, timezone)
+            to_time = parse_smart_datetime(to_time_str, timezone)
+
+            # Validate time range
+            if from_time >= to_time:
+                raise ValueError("'from' time must be before 'to' time")
+
+            # Get OCR text content for the absolute time range
+            ocr_data = db.get_screen_ocr_text_absolute(from_time, to_time)
+
+            # Extract unique applications with their usage stats
+            app_stats = {}
+            frame_app_map = {}
+
+            for item in ocr_data:
+                app = item.get('application', 'Unknown')
+                frame_id = item['frame_id']
+
+                if app not in app_stats:
+                    app_stats[app] = {
+                        'frame_count': 0,
+                        'text_records': 0,
+                        'first_seen': item['frame_time'],
+                        'last_seen': item['frame_time'],
+                        'windows': set(),
+                        'total_text_length': 0
+                    }
+
+                app_stats[app]['text_records'] += 1
+                app_stats[app]['total_text_length'] += len(item.get('text', ''))
+
+                if item['window']:
+                    app_stats[app]['windows'].add(item['window'])
+
+                # Update time range
+                if item['frame_time']:
+                    if item['frame_time'] < app_stats[app]['first_seen']:
+                        app_stats[app]['first_seen'] = item['frame_time']
+                    if item['frame_time'] > app_stats[app]['last_seen']:
+                        app_stats[app]['last_seen'] = item['frame_time']
+
+                # Count unique frames per app
+                if frame_id not in frame_app_map:
+                    frame_app_map[frame_id] = app
+                    app_stats[app]['frame_count'] += 1
+
+            # Format response
+            response_text = f"Found {len(app_stats)} applications with OCR data from {from_time_str} to {to_time_str}"
+            if timezone:
+                response_text += f" (timezone: {timezone})"
+            response_text += ":\n\n"
+
+            if not app_stats:
+                response_text += "No applications found with OCR data for this time period.\n"
+                response_text += "Try:\n"
+                response_text += "- Expanding the time range\n"
+                response_text += "- Checking if the date/time is correct\n"
+                return response_text
+
+            # Sort by text records (activity level)
+            sorted_apps = sorted(app_stats.items(), key=lambda x: x[1]['text_records'], reverse=True)
+
+            for i, (app, stats) in enumerate(sorted_apps, 1):
+                first_seen = stats['first_seen'].isoformat() if stats['first_seen'] else 'Unknown'
+                last_seen = stats['last_seen'].isoformat() if stats['last_seen'] else 'Unknown'
+                window_count = len(stats['windows'])
+                avg_text_length = stats['total_text_length'] // stats['text_records'] if stats['text_records'] > 0 else 0
+
+                response_text += f"{i}. {app}\n"
+                response_text += f"   Frames: {stats['frame_count']}, Text Records: {stats['text_records']}\n"
+                response_text += f"   Windows: {window_count}, Avg Text Length: {avg_text_length} chars\n"
+                response_text += f"   Active: {first_seen} to {last_seen}\n\n"
+
+            response_text += f"Total OCR records: {len(ocr_data)}\n"
             return response_text
 
         else:

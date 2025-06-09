@@ -350,6 +350,113 @@ class RewindDB:
 
         return self.get_screen_ocr_absolute(start_time, now)
 
+    def get_screen_ocr_text_absolute(self, start_time: datetime.datetime,
+                                   end_time: datetime.datetime) -> typing.List[dict]:
+        """retrieve screen ocr text content within an absolute time range.
+
+        queries the searchRanking_content table to get actual OCR text content
+        within the specified absolute time range.
+
+        args:
+            start_time: the start datetime to query from
+            end_time: the end datetime to query to
+
+        returns:
+            a list of dictionaries containing ocr text content
+        """
+
+        try:
+            # Convert to millisecond timestamps
+            start_timestamp = int(start_time.timestamp() * 1000)
+            end_timestamp = int(end_time.timestamp() * 1000)
+
+            # Query the searchRanking_content table for actual OCR text
+            query = """
+            SELECT
+                src.id as content_id,
+                src.c0 as text_content,
+                f.id as frame_id,
+                f.createdAt as created_at,
+                f.segmentId as segment_id,
+                s.bundleID as app_name,
+                s.windowName as window_name,
+                f.imageFileName
+            FROM
+                searchRanking_content src
+            LEFT JOIN
+                frame f ON src.id = f.id
+            LEFT JOIN
+                segment s ON f.segmentId = s.id
+            WHERE
+                f.createdAt BETWEEN ? AND ?
+                AND src.c0 IS NOT NULL
+                AND src.c0 != ''
+            ORDER BY
+                f.createdAt DESC
+            """
+
+            self.cursor.execute(query, (start_timestamp, end_timestamp))
+            rows = self.cursor.fetchall()
+
+            # If no results with millisecond timestamps, try string format
+            if not rows:
+                start_timestamp_str = start_time.strftime("%Y-%m-%dT%H:%M:%S.000")
+                end_timestamp_str = end_time.strftime("%Y-%m-%dT%H:%M:%S.999")
+
+                self.cursor.execute(query, (start_timestamp_str, end_timestamp_str))
+                rows = self.cursor.fetchall()
+
+            results = []
+            for row in rows:
+                # Parse the timestamp
+                if isinstance(row[3], str):
+                    try:
+                        frame_time = datetime.datetime.strptime(row[3], "%Y-%m-%dT%H:%M:%S.%f")
+                    except ValueError:
+                        frame_time = datetime.datetime.strptime(row[3], "%Y-%m-%dT%H:%M:%S")
+                else:
+                    frame_time = self._ms_to_datetime(row[3])
+
+                results.append({
+                    'content_id': row[0],
+                    'text': row[1],
+                    'frame_id': row[2],
+                    'frame_time': frame_time,
+                    'segment_id': row[4],
+                    'application': row[5],
+                    'window': row[6],
+                    'image_file': row[7]
+                })
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error in get_screen_ocr_text_absolute: {e}")
+            return []
+
+    def get_screen_ocr_text_relative(self, days: int = 0, hours: int = 0,
+                                   minutes: int = 0, seconds: int = 0) -> typing.List[dict]:
+        """retrieve screen ocr text content from a relative time period.
+
+        queries screen ocr text content from a time period relative to now.
+
+        args:
+            days: number of days to look back
+            hours: number of hours to look back
+            minutes: number of minutes to look back
+            seconds: number of seconds to look back
+
+        returns:
+            a list of dictionaries containing ocr text content
+        """
+
+        # Use UTC timezone to be consistent with other methods
+        now = datetime.datetime.now(datetime.timezone.utc)
+        delta = datetime.timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+        start_time = now - delta
+
+        return self.get_screen_ocr_text_absolute(start_time, now)
+
     def search(self, query: str, days: int = 7) -> typing.Dict[str, typing.List[dict]]:
         """search for keywords across both audio and screen data.
 
