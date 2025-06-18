@@ -8,7 +8,7 @@ RewindDB is a Python library that provides a convenient interface to the Rewind.
 
 The project consists of three main components:
 1. A core Python library (`rewinddb`) for direct database access
-2. Command-line tools for transcript retrieval and keyword searching
+2. Command-line tools for transcript retrieval, keyword searching, screen OCR data retrieval, and activity tracking
 3. An MCP STDIO server that exposes these capabilities to GenAI models through the standardized Model Context Protocol
 
 The main purpose of this project, for me, was to connect Rewind to my Raycast:
@@ -76,6 +76,8 @@ db = rewinddb.RewindDB(env_file="/path/to/custom/.env")
 # with cli tools
 python transcript_cli.py --relative "1 hour" --env-file /path/to/custom/.env
 python search_cli.py "meeting" --env-file /path/to/custom/.env
+python ocr_cli.py --relative "1 hour" --env-file /path/to/custom/.env
+python activity_cli.py --relative "1 day" --env-file /path/to/custom/.env
 ```
 
 ```bash
@@ -127,6 +129,79 @@ python search_cli.py "python" --context 5 --debug
 python search_cli.py "meeting" --env-file /path/to/custom/.env
 ```
 
+### ocr_cli.py
+
+Retrieve screen OCR (Optical Character Recognition) data from the Rewind.ai database. This tool allows you to see what text was visible on your screen during specific time periods, providing complete OCR text content rather than just metadata about frames and nodes.
+
+```bash
+# get OCR data from the last hour
+python ocr_cli.py --relative "1 hour"
+
+# get OCR data from the last 5 hours (supports short form)
+python ocr_cli.py --relative "5h"
+
+# get OCR data from a specific time range
+python ocr_cli.py --from "2023-05-11 13:00:00" --to "2023-05-11 17:00:00"
+
+# get OCR data for today only
+python ocr_cli.py --from "2023-05-11" --to "2023-05-11"
+
+# get OCR data for specific hours today
+python ocr_cli.py --from "13:00" --to "17:00"
+
+# list all applications that have OCR data
+python ocr_cli.py --list-apps
+
+# filter OCR data by specific application
+python ocr_cli.py --relative "1 day" --app "com.apple.Safari"
+
+# enable debug output and use custom .env file
+python ocr_cli.py --relative "7 days" --debug --env-file /path/to/custom/.env
+
+# display times in UTC instead of local time
+python ocr_cli.py --relative "1 day" --utc
+```
+
+**Key Features:**
+- **Time formats**: Supports relative time ("1 hour", "5h", "30m", "2d", "1w") and absolute time ranges
+- **Application filtering**: Use `--list-apps` to see available applications, then `--app` to filter by specific app
+- **Flexible time input**: Accepts various formats including date-only, time-only, and full datetime strings
+- **Text extraction**: Shows actual text content that was visible on screen, organized by timestamp and application
+
+### activity_cli.py
+
+Display comprehensive activity tracking data from the Rewind.ai database, including computer usage patterns, application usage statistics, and calendar meetings.
+
+```bash
+# get activity data for the last day
+python activity_cli.py --relative "1 day"
+
+# get activity data for the last 5 hours (supports short form)
+python activity_cli.py --relative "5h"
+
+# get activity data from a specific time range
+python activity_cli.py --from "2023-05-11 13:00:00" --to "2023-05-11 17:00:00"
+
+# get activity data for today only
+python activity_cli.py --from "2023-05-11" --to "2023-05-11"
+
+# get activity data for specific hours today
+python activity_cli.py --from "13:00" --to "17:00"
+
+# enable debug output and use custom .env file
+python activity_cli.py --relative "1 week" --debug --env-file /path/to/custom/.env
+
+# display times in UTC instead of local time
+python activity_cli.py --relative "1 day" --utc
+```
+
+**Key Features:**
+- **Active Hours**: Shows when your computer was actively being used, with hourly and daily breakdowns
+- **Application Usage**: Displays top applications by usage time with visual charts
+- **Calendar Meetings**: Shows meeting statistics, duration, and distribution by time of day
+- **Visual Charts**: Includes simple ASCII bar charts for easy data visualization
+- **Time Zone Support**: Displays times in local timezone by default, with UTC option available
+
 ## MCP STDIO Server
 
 The Model Context Protocol (MCP) server exposes RewindDB functionality to GenAI models through the standardized MCP STDIO protocol. This implementation is fully MCP-compliant and works with MCP clients like Claude, Raycast, and other AI assistants.
@@ -156,9 +231,64 @@ The MCP server provides the following tools:
 
 4. **`search_screen_ocr`**: Search through OCR screen content for keywords. Finds text that appeared on screen during specific time periods. Use this to find what was displayed on screen, applications used, or visual content during meetings or work sessions. Complements audio transcripts by showing what was visible.
 
-5. **`get_activity_stats`**: Get activity statistics for a specified time period (e.g., "1hour", "30minutes", "1day", "1week"). Provides comprehensive statistics about audio recordings, screen captures, and application usage.
+5. **`get_screen_ocr_relative`**: Get all screen OCR content from a relative time period (e.g., "2hours", "1day"). Returns complete OCR text content that was visible on screen, organized by application and timestamp. Use this to see everything that was displayed during a time period.
+   - **Parameters**: `time_period` (required, e.g., '1hour', '30minutes', '1day', '1week'), `application` (optional, filter by app name)
+   - **Use Case**: "Show me all screen content from the last 2 hours" or "Show me all Chrome content from the last day"
 
-6. **`get_transcript_by_id`**: **FOLLOW-UP TOOL** - Get complete transcript content by audio ID. Use this AFTER `get_transcripts_absolute` to retrieve full transcript text for summarization. Essential second step when the first tool shows preview text that needs complete content for proper analysis.
+6. **`get_screen_ocr_absolute`**: Get all screen OCR content from a specific time window. Returns complete OCR text content from the specified time range, with optional application filtering. Essential for reviewing what was visible during meetings or work sessions.
+   - **Parameters**: `from` (required, ISO format), `to` (required, ISO format), `timezone` (optional), `application` (optional, filter by app name)
+   - **Use Case**: "Show me all screen content from my 3 PM meeting" or "Show me all Slack content from yesterday afternoon"
+
+7. **`get_ocr_applications_relative`**: Discover all applications that have OCR data from a relative time period. Shows which applications were active and their activity levels. Use this to identify applications before filtering OCR content.
+   - **Parameters**: `time_period` (required, e.g., '1hour', '30minutes', '1day', '1week')
+   - **Use Case**: "What applications were active in the last 4 hours?" - helps users discover what apps to filter by
+   - **Returns**: Frame count per application, OCR node count (activity level), number of unique windows, time range when application was active, sorted by activity level
+
+8. **`get_ocr_applications_absolute`**: Discover all applications that have OCR data from a specific time window. Helps identify what applications were active during specific meetings or time periods.
+   - **Parameters**: `from` (required, ISO format), `to` (required, ISO format), `timezone` (optional)
+   - **Use Case**: "What applications were active during my meeting from 2-3 PM?" - helps users discover what apps to filter by
+   - **Returns**: Frame count per application, OCR node count (activity level), number of unique windows, time range when application was active, sorted by activity level
+
+9. **`get_activity_stats`**: Get activity statistics for a specified time period (e.g., "1hour", "30minutes", "1day", "1week"). Provides comprehensive statistics about audio recordings, screen captures, and application usage.
+
+10. **`get_transcript_by_id`**: **FOLLOW-UP TOOL** - Get complete transcript content by audio ID. Use this AFTER `get_transcripts_absolute` to retrieve full transcript text for summarization. Essential second step when the first tool shows preview text that needs complete content for proper analysis.
+
+### OCR Tools Workflow Integration
+
+The OCR tools work together in a natural workflow for comprehensive screen content analysis:
+
+1. **Discovery Phase**: Use `get_ocr_applications_*` to see what applications were active
+   ```
+   get_ocr_applications_relative: "2hours"
+   → Returns: Chrome, Slack, VS Code, Zoom, etc.
+   ```
+
+2. **Focused Retrieval**: Use `get_screen_ocr_*` with application filter to get specific content
+   ```
+   get_screen_ocr_relative: time_period="2hours", application="Chrome"
+   → Returns: All Chrome OCR content from last 2 hours
+   ```
+
+3. **Keyword Search**: Use existing `search_screen_ocr` for specific content within results
+   ```
+   search_screen_ocr: keyword="meeting notes", application="Slack"
+   → Returns: Specific matches for "meeting notes" in Slack
+   ```
+
+**Key Features:**
+- **Application Filtering**: Both OCR content tools support optional application filtering with case-insensitive matching (e.g., "chrome" matches "Google Chrome")
+- **Rich Metadata**: Application discovery tools provide frame count, OCR node count (activity level), number of unique windows, and time ranges
+- **Consistent Time Handling**: All tools use smart datetime parsing supporting both relative time periods and absolute time ranges with timezone handling
+- **Complete Content Access**: OCR content tools return actual OCR text content grouped by frame, not just metadata
+- **Meeting Analysis**: Perfect for reviewing what was displayed during meetings or work sessions
+
+**Benefits and Use Cases:**
+- **Complete OCR Access**: Users can now pull all screen content from any time window, not just search for specific keywords
+- **Application Discovery**: Easy way to see what apps were active during specific periods before filtering content
+- **Flexible Filtering**: Can focus on specific applications after discovery phase
+- **Meeting Analysis**: Perfect for reviewing what was displayed during meetings or presentations
+- **Work Session Review**: Analyze screen activity and content during specific work periods
+- **Seamless Integration**: Works with existing search and transcript tools for comprehensive data analysis
 
 ### MCP Client Integration
 
@@ -232,6 +362,15 @@ ocr_data = db.get_screen_ocr_relative(days=1)
 
 # get screen ocr from a specific time range
 ocr_data = db.get_screen_ocr_absolute(start_time, end_time)
+
+# get complete OCR text content from relative time period
+ocr_text = db.get_screen_ocr_text_relative(hours=2)
+
+# get complete OCR text content from specific time range
+ocr_text = db.get_screen_ocr_text_absolute(start_time, end_time)
+
+# get OCR text content filtered by application
+ocr_text = db.get_screen_ocr_text_relative(hours=1, application="Chrome")
 ```
 
 ### Searching Across Data
@@ -298,7 +437,7 @@ This table stores the actual OCR text content extracted from screen captures. It
 - `c1`: Timestamp information
 - `c2`: Window/application information
 
-This table is crucial for searching through screen content.
+This table is crucial for searching through screen content and is used by the new OCR text retrieval methods (`get_screen_ocr_text_absolute()` and `get_screen_ocr_text_relative()`) to provide complete OCR text content rather than just metadata about frames and nodes.
 
 #### Segments
 Application usage sessions that track when you were using specific applications and windows. Each segment in the `segment` table includes the application bundle ID, window name, start time, and end time. Segments help organize frames and audio recordings by the application context they occurred in.
