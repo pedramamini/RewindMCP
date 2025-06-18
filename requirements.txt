@@ -1,0 +1,18 @@
+# Core dependencies for RewindMCP
+# Database and encryption
+pysqlcipher3
+
+# Data validation and serialization
+pydantic
+
+# HTTP requests
+requests
+
+# Environment variable loading
+python-dotenv
+
+# Model Context Protocol
+mcp>=0.1.0
+
+# CLI formatting and display
+tabulate
