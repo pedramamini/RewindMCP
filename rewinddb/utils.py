@@ -19,7 +19,11 @@ def timestamp_to_datetime(timestamp_ms: int) -> datetime.datetime:
         datetime object representing the timestamp
     """
 
-    return datetime.datetime.fromtimestamp(timestamp_ms / 1000)
+    # Always return timezone-aware UTC datetimes to be consistent with other
+    # helpers like ``_ms_to_datetime`` in ``RewindDB``.
+    return datetime.datetime.fromtimestamp(
+        timestamp_ms / 1000, tz=datetime.timezone.utc
+    )
 
 
 def datetime_to_timestamp(dt: datetime.datetime) -> int:
@@ -32,6 +36,10 @@ def datetime_to_timestamp(dt: datetime.datetime) -> int:
         milliseconds since epoch
     """
 
+    # Assume UTC when naive datetime objects are provided to avoid implicit
+    # conversion using the local timezone.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
     return int(dt.timestamp() * 1000)
 
 
