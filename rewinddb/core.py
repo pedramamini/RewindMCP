@@ -179,6 +179,10 @@ class RewindDB:
                     start_time_dt = self._ms_to_datetime(row[1])
                     absolute_time = self._ms_to_datetime(row[1] + row[5])
 
+                # Filter to ensure word is within the requested range
+                if not (start_time <= absolute_time <= end_time):
+                    continue
+
                 results.append({
                     'audio_id': row[0],
                     'audio_start_time': start_time_dt,
