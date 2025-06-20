@@ -106,6 +106,12 @@ class RewindDB:
             a list of dictionaries containing transcript data
         """
 
+        # Normalize input datetimes to ensure consistent timezone handling
+        if start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=datetime.timezone.utc)
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=datetime.timezone.utc)
+
         # Try both timestamp formats
         try:
             # First try with millisecond timestamps
@@ -173,11 +179,17 @@ class RewindDB:
                         # Try without microseconds
                         start_time_dt = datetime.datetime.strptime(row[1], "%Y-%m-%dT%H:%M:%S")
 
+                    # Assume stored timestamps are in UTC
+                    start_time_dt = start_time_dt.replace(tzinfo=datetime.timezone.utc)
                     absolute_time = start_time_dt + datetime.timedelta(milliseconds=row[5])
                 else:
                     # Use the existing _ms_to_datetime method
                     start_time_dt = self._ms_to_datetime(row[1])
                     absolute_time = self._ms_to_datetime(row[1] + row[5])
+
+                # Filter to ensure word is within the requested range
+                if not (start_time <= absolute_time <= end_time):
+                    continue
 
                 results.append({
                     'audio_id': row[0],
