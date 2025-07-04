@@ -2,6 +2,18 @@
 
 A Python library for interfacing with the Rewind.ai SQLite database.
 
+## Changelog
+
+### 2025-07-04 - Voice Export & Training Data Features
+- **NEW**: `--export-own-voice` CLI option for exporting user's voice transcripts organized by day
+- **NEW**: `--speech-source` filter to separate user voice (`me`) from other speakers (`others`)
+- **NEW**: Multi-format export support: text, JSON, and audio file export
+- **NEW**: `--export-format audio` with `--audio-export-dir` for exporting actual M4A audio files
+- **NEW**: `my-words.sh` script for generating word clouds from your voice data
+- **ENHANCED**: RewindDB core library now supports speech source filtering
+- **USE CASE**: Perfect for collecting clean voice training data for LLM fine-tuning
+- **FILTER**: Text exports contain only user's voice (no other speakers), audio exports contain full conversations
+
 ## Project Overview
 
 RewindDB is a Python library that provides a convenient interface to the Rewind.ai SQLite database. Rewind.ai is a personal memory assistant that captures audio transcripts and screen OCR data in real-time. This project allows you to programmatically access and search through this data, making it possible to retrieve past conversations, find specific information mentioned in meetings, or analyze screen content from previous work sessions.
@@ -89,7 +101,9 @@ python mcp_stdio.py --env-file /path/to/custom/.env
 
 ### transcript_cli.py
 
-Retrieve audio transcripts from the Rewind.ai database.
+Retrieve audio transcripts from the Rewind.ai database with advanced voice filtering and export capabilities.
+
+#### Basic Transcript Retrieval
 
 ```bash
 # get transcripts from the last hour
@@ -107,6 +121,44 @@ python transcript_cli.py --relative "7 days" --debug
 # use a custom .env file
 python transcript_cli.py --relative "1 hour" --env-file /path/to/custom/.env
 ```
+
+#### Voice Source Filtering
+
+```bash
+# filter for only your own voice
+python transcript_cli.py --relative "1 hour" --speech-source me
+
+# filter for other speakers only
+python transcript_cli.py --relative "1 day" --speech-source others
+
+# filter works with any time range
+python transcript_cli.py --from "2025-07-01" --to "2025-07-02" --speech-source me
+```
+
+#### Voice Export for Training Data 🎙️
+
+**Perfect for collecting clean voice training data for LLM fine-tuning**
+
+```bash
+# export your voice transcripts organized by day (text format)
+python transcript_cli.py --export-own-voice "2025-01-01 to 2025-07-04"
+
+# export as JSON with metadata
+python transcript_cli.py --export-own-voice "2025-01-01 to 2025-07-04" --export-format json --save-to my_voice.json
+
+# export actual audio files organized by day
+python transcript_cli.py --export-own-voice "2025-01-01 to 2025-07-04" --export-format audio --audio-export-dir ./my_voice_audio
+
+# generate word cloud from your voice data (requires wordcloud command)
+./my-words.sh  # automatically uses last 6 months of your voice data
+```
+
+**Key Features:**
+- **Clean Training Data**: Text exports contain only YOUR voice, filtered out other speakers
+- **Audio Export**: M4A files organized by day with transcript summaries
+- **Multiple Formats**: Text (readable), JSON (structured), Audio (original files)
+- **Day Organization**: Perfect for chronological training data or analysis
+- **Word Cloud**: Quick visualization of your most-used words with `my-words.sh`
 
 ### search_cli.py
 
@@ -352,6 +404,18 @@ from datetime import datetime
 start_time = datetime(2023, 5, 11, 13, 0, 0)  # 1:00 PM
 end_time = datetime(2023, 5, 11, 17, 0, 0)    # 5:00 PM
 transcripts = db.get_audio_transcripts_absolute(start_time, end_time)
+
+# filter by speech source for voice training data
+user_only = db.get_audio_transcripts_relative(hours=1, speech_source='me')
+others_only = db.get_audio_transcripts_relative(hours=1, speech_source='others')
+
+# get voice data organized by day for training
+transcripts_by_day = db.get_own_voice_transcripts_by_day(start_time, end_time)
+for date, transcripts in transcripts_by_day.items():
+    print(f"{date}: {len(transcripts)} words")
+    words = [t['word'] for t in transcripts]
+    text = ' '.join(words)
+    print(f"Sample: {text[:100]}...")
 ```
 
 ### Retrieving Screen OCR Data
@@ -414,6 +478,14 @@ Audio snippets are stored on disk at:
 
 #### Transcript Words
 Individual words extracted from audio recordings through speech recognition. Each word in the `transcript_word` table includes information about when it occurred within the audio recording (timeOffset), its position in the full text (fullTextOffset), and its duration. Transcript words are linked to their source audio recording.
+
+**Key Fields:**
+- `speechSource`: Identifies the speaker - `'me'` for user's voice, `'others'` for other speakers
+- `word`: The transcribed word text
+- `timeOffset`: Timing within the audio segment (milliseconds)
+- `duration`: Length of the spoken word (milliseconds)
+
+This speaker identification enables clean voice training data export by filtering to only the user's spoken words.
 
 #### Frames
 Screenshots captured by Rewind.ai at regular intervals as you use your computer. Each frame in the `frame` table includes a timestamp (createdAt) and is linked to the application segment it belongs to. Frames are the visual equivalent of audio recordings, capturing what was on your screen at specific moments.

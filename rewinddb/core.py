@@ -92,7 +92,8 @@ class RewindDB:
             self.conn.close()
 
     def get_audio_transcripts_absolute(self, start_time: datetime.datetime,
-                                      end_time: datetime.datetime) -> typing.List[dict]:
+                                      end_time: datetime.datetime, 
+                                      speech_source: typing.Optional[str] = None) -> typing.List[dict]:
         """retrieve audio transcripts within an absolute time range.
 
         queries the audio and transcript_word tables to get transcribed words
@@ -101,6 +102,7 @@ class RewindDB:
         args:
             start_time: the start datetime to query from
             end_time: the end datetime to query to
+            speech_source: optional filter for speech source ('me' for user voice, 'others' for other speakers)
 
         returns:
             a list of dictionaries containing transcript data
@@ -118,7 +120,15 @@ class RewindDB:
             start_timestamp = int(start_time.timestamp() * 1000)  # convert to milliseconds
             end_timestamp = int(end_time.timestamp() * 1000)  # convert to milliseconds
 
-            query = """
+            # Build the WHERE clause based on speech_source filter
+            where_clause = "a.startTime + tw.timeOffset BETWEEN ? AND ?"
+            params = [start_timestamp, end_timestamp]
+            
+            if speech_source:
+                where_clause += " AND tw.speechSource = ?"
+                params.append(speech_source)
+
+            query = f"""
             SELECT
                 a.id as audio_id,
                 a.startTime as start_time,
@@ -126,18 +136,20 @@ class RewindDB:
                 tw.id as word_id,
                 tw.word,
                 tw.timeOffset as time_offset,
-                tw.duration
+                tw.duration,
+                tw.speechSource as speech_source,
+                a.path as audio_path
             FROM
                 audio a
             JOIN
                 transcript_word tw ON a.segmentId = tw.segmentId
             WHERE
-                a.startTime + tw.timeOffset BETWEEN ? AND ?
+                {where_clause}
             ORDER BY
                 a.startTime, tw.timeOffset
             """
 
-            self.cursor.execute(query, (start_timestamp, end_timestamp))
+            self.cursor.execute(query, params)
             rows = self.cursor.fetchall()
 
             # If no results, try with string-formatted timestamps
@@ -146,7 +158,15 @@ class RewindDB:
                 start_timestamp = start_time.strftime("%Y-%m-%dT%H:%M:%S.000")
                 end_timestamp = end_time.strftime("%Y-%m-%dT%H:%M:%S.999")
 
-                query = """
+                # Build the WHERE clause for string format
+                where_clause = "a.startTime BETWEEN ? AND ?"
+                params = [start_timestamp, end_timestamp]
+                
+                if speech_source:
+                    where_clause += " AND tw.speechSource = ?"
+                    params.append(speech_source)
+
+                query = f"""
                 SELECT
                     a.id as audio_id,
                     a.startTime as start_time,
@@ -154,18 +174,20 @@ class RewindDB:
                     tw.id as word_id,
                     tw.word,
                     tw.timeOffset as time_offset,
-                    tw.duration
+                    tw.duration,
+                    tw.speechSource as speech_source,
+                    a.path as audio_path
                 FROM
                     audio a
                 JOIN
                     transcript_word tw ON a.segmentId = tw.segmentId
                 WHERE
-                    a.startTime BETWEEN ? AND ?
+                    {where_clause}
                 ORDER BY
                     a.startTime, tw.timeOffset
                 """
 
-                self.cursor.execute(query, (start_timestamp, end_timestamp))
+                self.cursor.execute(query, params)
                 rows = self.cursor.fetchall()
 
             results = []
@@ -199,6 +221,8 @@ class RewindDB:
                     'word': row[4],
                     'time_offset': row[5],
                     'duration': row[6],  # using duration instead of confidence
+                    'speech_source': row[7] if len(row) > 7 else None,
+                    'audio_path': row[8] if len(row) > 8 else None,
                     'absolute_time': absolute_time
                 })
 
@@ -209,7 +233,8 @@ class RewindDB:
             return []
 
     def get_audio_transcripts_relative(self, days: int = 0, hours: int = 0,
-                                      minutes: int = 0, seconds: int = 0) -> typing.List[dict]:
+                                      minutes: int = 0, seconds: int = 0, 
+                                      speech_source: typing.Optional[str] = None) -> typing.List[dict]:
         """retrieve audio transcripts from a relative time period.
 
         queries audio transcripts from a time period relative to now.
@@ -219,6 +244,7 @@ class RewindDB:
             hours: number of hours to look back
             minutes: number of minutes to look back
             seconds: number of seconds to look back
+            speech_source: optional filter for speech source ('me' for user voice, 'others' for other speakers)
 
         returns:
             a list of dictionaries containing transcript data
@@ -229,7 +255,39 @@ class RewindDB:
         delta = datetime.timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
         start_time = now - delta
 
-        return self.get_audio_transcripts_absolute(start_time, now)
+        return self.get_audio_transcripts_absolute(start_time, now, speech_source)
+
+    def get_own_voice_transcripts_by_day(self, start_time: datetime.datetime,
+                                        end_time: datetime.datetime) -> typing.Dict[str, typing.List[dict]]:
+        """retrieve user's own voice transcripts organized by day.
+
+        queries audio transcripts for user's own voice only (speechSource = 'me') 
+        and organizes them by day for voice training data export.
+
+        args:
+            start_time: the start datetime to query from
+            end_time: the end datetime to query to
+
+        returns:
+            a dictionary with dates as keys and lists of transcript dictionaries as values
+        """
+        
+        # Get all own voice transcripts
+        transcripts = self.get_audio_transcripts_absolute(start_time, end_time, speech_source='me')
+        
+        # Group by day
+        transcripts_by_day = {}
+        for transcript in transcripts:
+            # Get the date in local time
+            local_time = transcript['absolute_time'].astimezone()
+            date_str = local_time.date().isoformat()
+            
+            if date_str not in transcripts_by_day:
+                transcripts_by_day[date_str] = []
+            
+            transcripts_by_day[date_str].append(transcript)
+        
+        return transcripts_by_day
 
     def get_screen_ocr_absolute(self, start_time: datetime.datetime,
                                end_time: datetime.datetime) -> typing.List[dict]:
