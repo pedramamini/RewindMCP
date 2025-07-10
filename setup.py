@@ -15,7 +15,7 @@ setuptools.setup(
     description="a python library for interfacing with the rewind.ai sqlite database",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/pedram/rewinddb",
+    url="https://github.com/pedramamini/RewindMCP",
     packages=setuptools.find_packages(),
     classifiers=[
         "programming language :: python :: 3",
@@ -29,6 +29,6 @@ setuptools.setup(
         "requests",
         "python-dotenv",
         "mcp>=0.1.0",
-	"tabulate",
+        "tabulate",
     ],
 )
