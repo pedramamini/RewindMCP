@@ -11,7 +11,7 @@ import time
 import datetime
 import typing
 import logging
-import pysqlcipher3.dbapi2 as sqlite3
+from sqlcipher3 import dbapi2 as sqlite3
 from rewinddb.config import get_db_path, get_db_password
 
 # configure logging
