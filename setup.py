@@ -24,10 +24,11 @@ setuptools.setup(
     ],
     python_requires=">=3.6",
     install_requires=[
-        "pysqlcipher3",
+        "sqlcipher3",
         "pydantic",
         "requests",
         "python-dotenv",
         "mcp>=0.1.0",
+	"tabulate",
     ],
 )
