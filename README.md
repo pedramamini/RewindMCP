@@ -40,7 +40,7 @@ The main purpose of this project, for me, was to connect Rewind to my Raycast:
 
 ```bash
 # clone the repository
-git clone https://github.com/yourusername/RewindMCP.git
+git clone https://github.com/pedramamini/RewindMCP.git
 cd RewindMCP
 
 # install the package and dependencies
@@ -149,7 +149,8 @@ python transcript_cli.py --export-own-voice "2025-01-01 to 2025-07-04" --export-
 # export actual audio files organized by day
 python transcript_cli.py --export-own-voice "2025-01-01 to 2025-07-04" --export-format audio --audio-export-dir ./my_voice_audio
 
-# generate word cloud from your voice data (requires wordcloud command)
+# generate word cloud from your voice data (requires wordcloud library)
+pip install wordcloud matplotlib  # install dependencies
 ./my-words.sh  # automatically uses last 6 months of your voice data
 ```
 
@@ -530,7 +531,7 @@ Key relationships:
 
 ```bash
 # clone the repository
-git clone https://github.com/yourusername/RewindMCP.git
+git clone https://github.com/pedramamini/RewindMCP.git
 cd RewindMCP
 
 # install in development mode

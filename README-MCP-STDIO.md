@@ -28,7 +28,7 @@ The server implements the MCP specification with proper JSON-RPC 2.0 protocol ov
 
 1. Install the required dependencies:
 ```bash
-pip install "mcp>=0.1.0" pysqlcipher3 python-dotenv
+pip install "mcp>=0.1.0" sqlcipher3 python-dotenv tabulate
 ```
 
 2. Set up your RewindDB configuration in a `.env` file:

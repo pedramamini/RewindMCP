@@ -18,7 +18,7 @@ RewindMCP is a Python library that interfaces with the Rewind.ai SQLite database
 pip install -e .
 
 # Install dependencies
-pip install pysqlcipher3 pydantic requests python-dotenv "mcp>=0.1.0"
+pip install sqlcipher3 pydantic requests python-dotenv "mcp>=0.1.0" tabulate
 ```
 
 ### Testing
