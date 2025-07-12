@@ -40,12 +40,12 @@ def load_config(env_file: typing.Optional[str] = None) -> dict:
     db_path = os.getenv("DB_PATH")
     db_password = os.getenv("DB_PASSWORD")
 
-    # ensure required configuration is provided
+    # use default values if not provided
     if not db_path:
-        raise ValueError("DB_PATH environment variable must be set in .env file")
+        db_path = "/Users/pedram/Library/Application Support/com.memoryvault.MemoryVault/db-enc.sqlite3"
 
     if not db_password:
-        raise ValueError("DB_PASSWORD environment variable must be set in .env file")
+        db_password = "soiZ58XZJhdka55hLUp18yOtTUTDXz7Diu7Z4JzuwhRwGG13N6Z9RTVU1fGiKkuF"
 
     return {
         "db_path": db_path,
