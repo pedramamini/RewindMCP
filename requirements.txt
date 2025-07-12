@@ -1,6 +1,6 @@
 # Core dependencies for RewindMCP
 # Database and encryption
-pysqlcipher3
+sqlcipher3
 
 # Data validation and serialization
 pydantic
