@@ -134,3 +134,4 @@ MCP server exposes 10+ tools for:
 - Exported audio clips investigation
   - Confirmed both sides of conversation are present in exported clips
   - Uncertain if .TXT transcripts are exclusively user's voice
+- remember to always check scratch/ for any debug tooling and that this is where you should make debug tooling

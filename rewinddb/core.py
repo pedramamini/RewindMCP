@@ -123,9 +123,13 @@ class RewindDB:
             start_timestamp = int(start_time.timestamp() * 1000)  # convert to milliseconds
             end_timestamp = int(end_time.timestamp() * 1000)  # convert to milliseconds
 
-            # Build the WHERE clause based on speech_source filter
-            where_clause = "a.startTime + tw.timeOffset BETWEEN ? AND ?"
-            params = [start_timestamp, end_timestamp]
+            # Build WHERE clause to find overlapping recordings
+            # Audio overlaps if it starts before end_time AND ends after start_time
+            where_clause = """
+                (a.startTime <= ? AND (a.startTime + a.duration) >= ?)
+                AND (a.startTime + tw.timeOffset) BETWEEN ? AND ?
+            """
+            params = [end_timestamp, start_timestamp, start_timestamp, end_timestamp]
             
             if speech_source:
                 where_clause += " AND tw.speechSource = ?"
@@ -161,9 +165,11 @@ class RewindDB:
                 start_timestamp = start_time.strftime("%Y-%m-%dT%H:%M:%S.000")
                 end_timestamp = end_time.strftime("%Y-%m-%dT%H:%M:%S.999")
 
-                # Build the WHERE clause for string format
-                where_clause = "a.startTime BETWEEN ? AND ?"
-                params = [start_timestamp, end_timestamp]
+                # Build WHERE clause for string format - find overlapping recordings
+                # For string timestamps, we need to check overlap differently
+                # We'll be more permissive and filter words later
+                where_clause = "a.startTime <= ?"
+                params = [end_timestamp]
                 
                 if speech_source:
                     where_clause += " AND tw.speechSource = ?"
@@ -187,7 +193,8 @@ class RewindDB:
                 WHERE
                     {where_clause}
                 ORDER BY
-                    a.startTime, tw.timeOffset
+                    a.startTime DESC, tw.timeOffset
+                LIMIT 50000
                 """
 
                 self.cursor.execute(query, params)

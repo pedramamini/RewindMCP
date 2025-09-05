@@ -70,9 +70,10 @@ def format_transcript(transcript_data: typing.List[dict]) -> str:
             }
         sessions[audio_id]['words'].append(item)
 
-    # format each session
+    # format each session (sort sessions by start time, oldest first)
     result = []
-    for audio_id, session in sessions.items():
+    sorted_sessions = sorted(sessions.items(), key=lambda x: x[1]['start_time'])
+    for audio_id, session in sorted_sessions:
         start_time = session['start_time'].strftime('%Y-%m-%d %H:%M:%S')
         result.append(f"transcript from {start_time}:")
 
