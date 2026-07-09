@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/pedramamini-rewindmcp-badge.png)](https://mseep.ai/app/pedramamini-rewindmcp)
+
 # RewindDB
 
 A Python library for interfacing with the Rewind.ai SQLite database.
